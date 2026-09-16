@@ -8,7 +8,7 @@ from .command_extension_matchers import executable_matcher, executable_names, sa
 from .command_extension_specs import CommandExtensionSpec
 from .command_matcher_contracts import MatcherEvidence
 from .command_model import CanonicalCommand
-from .command_option_parsing import known_option_advance
+from .command_option_parsing import known_option_advance, long_flag_assignment_is_enabled
 from .command_rules import (
     AnyMatcher,
     CommandSafetyRule,
@@ -147,6 +147,12 @@ _SIMGIT_DELETE_UNMERGED = AnyMatcher(
 # Residual, as simgit's own contract intends: a lone `simgit remove $FLAGS`
 # whose variable word-splits into a flag is spelled exactly like the ordinary
 # cleanup it imitates, and reviewing it would review every cleanup.
+#
+# `--dry-run` and `--help` only make a run quiet when option parsing puts them
+# in a flag slot of their own. `simgit gc --prefix --dry-run $FLAGS` spends the
+# token as the `--prefix` value, so the run previews nothing and `$FLAGS` is
+# still an unproven flag slot; reading the token before parsing would hand any
+# argv a two-token cloak for a destructive expansion.
 _EXPANSION_MARKERS: frozenset[str] = frozenset({"$", "`"})
 
 
@@ -196,10 +202,10 @@ class SimgitFlagSlotExpansionMatcher:
     def _flag_slot_is_unresolved(self, arguments: tuple[str, ...]) -> bool:
         """Return whether an expansion sits where a flag, not a value, can land."""
 
-        if self.quiet_flags.intersection(arguments):
-            return False
         positionals = 0
         saw_expansion = False
+        saw_quiet_flag = False
+        unresolved_option_name = False
         options_ended = False
         index = 0
         while index < len(arguments):
@@ -216,8 +222,10 @@ class SimgitFlagSlotExpansionMatcher:
                 )
                 if advance is None:
                     if self._is_unresolved(argument.partition("=")[0]):
-                        return True
+                        unresolved_option_name = True
                     advance = 1
+                elif self._occupies_quiet_flag_slot(argument):
+                    saw_quiet_flag = True
                 saw_expansion = saw_expansion or any(
                     self._is_unresolved(token) for token in arguments[index : index + advance]
                 )
@@ -226,7 +234,18 @@ class SimgitFlagSlotExpansionMatcher:
             positionals += 1
             saw_expansion = saw_expansion or self._is_unresolved(argument)
             index += 1
-        return saw_expansion and positionals > self.positional_arity
+        # The quiet verdict is the whole parse's, not one token's: a preview or
+        # help run anywhere in argv acts on nothing, and an unresolved option
+        # name earlier in the same argv does not change that.
+        if saw_quiet_flag:
+            return False
+        return unresolved_option_name or (saw_expansion and positionals > self.positional_arity)
+
+    def _occupies_quiet_flag_slot(self, argument: str) -> bool:
+        """Return whether a parsed option is a quiet flag in its own flag slot."""
+
+        name, _, _ = argument.partition("=")
+        return name in self.quiet_flags and long_flag_assignment_is_enabled(argument)
 
     def _is_unresolved(self, argument: str) -> bool:
         """Return whether a token carries shell syntax argv cannot resolve."""

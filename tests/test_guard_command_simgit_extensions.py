@@ -92,6 +92,12 @@ SIMGIT_EXPANSION_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
     ("simgit gc --prefix $(cat /tmp/prefix)", _DELETE_UNMERGED),
     ("exec simgit.exe remove /tmp/agent-work $FLAGS", _DISCARD_DIRTY),
     ("xargs -n 1 sg gc $FLAGS", _DELETE_UNMERGED),
+    # A preview token spent as a declared option's value previews nothing, so
+    # the expansion behind it is still an unproven flag slot.
+    ("simgit gc --prefix --dry-run $FLAGS", _DISCARD_DIRTY),
+    ("simgit gc --prefix --dry-run $FLAGS", _DELETE_UNMERGED),
+    ("sg gc --older-than --dry-run ${CLEANUP_FLAGS}", _DISCARD_DIRTY),
+    ("simgit remove -m --help $FLAGS /tmp/agent-work", _DELETE_UNMERGED),
 )
 
 SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
@@ -134,6 +140,9 @@ SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
     # A preview or help run acts on nothing, whatever the expansion holds.
     "simgit gc --dry-run $FLAGS",
     "simgit gc $FLAGS --help",
+    # The preview flag still counts once parsing gives it a slot of its own,
+    # even next to an option that spends its value on a real prefix.
+    "simgit gc --prefix agent/ --dry-run $FLAGS",
     # Subcommands outside the destructive pair are not reviewed for expansions.
     'simgit add "$BRANCH" --path "$WORKTREE" --ephemeral',
     'simgit run "$BRANCH" -- pytest -x',
