@@ -59,6 +59,39 @@ SIMGIT_WRAPPER_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
     ("command simgit gc --delete-branches --delete-unmerged", _DELETE_UNMERGED),
     ('bash -c "simgit gc --delete-branches --delete-unmerged"', _DELETE_UNMERGED),
     ("sh -c 'simgit remove /tmp/agent-work --discard-dirty'", _DISCARD_DIRTY),
+    # The portable Windows spellings of the nested launcher carry the same
+    # authority as the bare names.
+    ("exec simgit.exe remove /tmp/agent-work --discard-dirty", _DISCARD_DIRTY),
+    ("exec simgit.cmd gc --discard-dirty", _DISCARD_DIRTY),
+    ("exec sg.exe remove agent/1234 --delete-branch --delete-unmerged", _DELETE_UNMERGED),
+    ("xargs simgit.cmd gc --delete-branches --delete-unmerged", _DELETE_UNMERGED),
+    ("xargs -n 1 sg.exe gc --discard-dirty", _DISCARD_DIRTY),
+)
+
+# An unresolved expansion in a slot a flag can occupy cannot prove either
+# destructive flag absent: `remove` takes one positional target and `gc` takes
+# none, so anything past that arity is an option slot.
+SIMGIT_EXPANSION_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
+    ("simgit gc $FLAGS", _DISCARD_DIRTY),
+    ("simgit gc $FLAGS", _DELETE_UNMERGED),
+    ('simgit gc "$FLAGS" --delete-branches', _DELETE_UNMERGED),
+    ("simgit gc --older-than 1h `cat /tmp/flags`", _DISCARD_DIRTY),
+    ("sg gc ${CLEANUP_FLAGS} --prefix agent/", _DISCARD_DIRTY),
+    ("simgit --json gc $(printf -- --discard-dirty)", _DISCARD_DIRTY),
+    ("simgit remove /tmp/agent-work $FLAGS", _DISCARD_DIRTY),
+    ('simgit remove $FLAGS "$CLEANUP_TOKEN"', _DELETE_UNMERGED),
+    ("simgit remove --delete-branch /tmp/agent-work ${FLAGS}", _DELETE_UNMERGED),
+    # The expansion is the option name itself, not one of its values.
+    ("simgit remove /tmp/agent-work --$FLAG", _DISCARD_DIRTY),
+    # An unquoted command substitution emits a token stream, so the single
+    # positional `remove` accepts does not bound what it can add; quoting it
+    # does, and the quoted form stays with the ordinary cleanups below.
+    ("simgit remove $(git branch --show-current)", _DISCARD_DIRTY),
+    ("sg remove `cat /tmp/target`", _DELETE_UNMERGED),
+    ("simgit remove --commit -m $(date +%F) /tmp/agent-work", _DISCARD_DIRTY),
+    ("simgit gc --prefix $(cat /tmp/prefix)", _DELETE_UNMERGED),
+    ("exec simgit.exe remove /tmp/agent-work $FLAGS", _DISCARD_DIRTY),
+    ("xargs -n 1 sg gc $FLAGS", _DELETE_UNMERGED),
 )
 
 SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
@@ -88,6 +121,25 @@ SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
     "simgit remove --help",
     "simgit gc --help",
     "simgit remove /tmp/agent-work --discard-dirty --help",
+    # An expansion that can only be the one positional `remove` accepts is the
+    # documented allocator pattern, not an unproven flag. Quoting keeps a
+    # command substitution inside that one slot.
+    'simgit remove "$CLEANUP_TOKEN"',
+    "simgit remove $CLEANUP_TOKEN --delete-branch",
+    'simgit remove --commit -m "$MESSAGE" "$CLEANUP_TOKEN"',
+    'simgit remove "$(git branch --show-current)"',
+    # Expansions confined to declared option values stay values.
+    'simgit gc --prefix "$PREFIX" --older-than "$WINDOW"',
+    'simgit remove --commit -m "$(date +%F)" /tmp/agent-work',
+    # A preview or help run acts on nothing, whatever the expansion holds.
+    "simgit gc --dry-run $FLAGS",
+    "simgit gc $FLAGS --help",
+    # Subcommands outside the destructive pair are not reviewed for expansions.
+    'simgit add "$BRANCH" --path "$WORKTREE" --ephemeral',
+    'simgit run "$BRANCH" -- pytest -x',
+    # Nested launcher spellings without a destructive flag.
+    "exec simgit.exe remove /tmp/agent-work",
+    "xargs simgit.cmd gc --dry-run",
     # The same normalized wrappers carrying a safe command stay unmatched.
     "env simgit gc --discard-dirty --dry-run",
     "command sg remove /tmp/agent-work",
@@ -126,6 +178,17 @@ def test_simgit_wrapper_and_compound_invocations_reach_review(tmp_path: Path) ->
 
     failures: list[str] = []
     for command, rule_id in SIMGIT_WRAPPER_REVIEW_COMMANDS:
+        matched = _effective_rule_ids(command, tmp_path)
+        if rule_id not in matched:
+            failures.append(f"{command!r}: matched={sorted(matched)!r}, expected {rule_id!r}")
+    assert not failures, "\n".join(failures)
+
+
+def test_simgit_unresolved_flag_slots_fail_closed(tmp_path: Path) -> None:
+    """An expansion that can occupy a flag slot is reviewed, not assumed harmless."""
+
+    failures: list[str] = []
+    for command, rule_id in SIMGIT_EXPANSION_REVIEW_COMMANDS:
         matched = _effective_rule_ids(command, tmp_path)
         if rule_id not in matched:
             failures.append(f"{command!r}: matched={sorted(matched)!r}, expected {rule_id!r}")

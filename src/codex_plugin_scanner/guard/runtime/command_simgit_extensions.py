@@ -2,9 +2,20 @@
 
 from __future__ import annotations
 
-from .command_extension_matchers import executable_matcher, safe_flag_variant
+from dataclasses import dataclass
+
+from .command_extension_matchers import executable_matcher, executable_names, safe_flag_variant
 from .command_extension_specs import CommandExtensionSpec
-from .command_rules import AnyMatcher, CommandSafetyRule
+from .command_matcher_contracts import MatcherEvidence
+from .command_model import CanonicalCommand
+from .command_option_parsing import known_option_advance
+from .command_rules import (
+    AnyMatcher,
+    CommandSafetyRule,
+    _after_leading_options,
+    _segment_matches_executable,
+    _without_options,
+)
 
 # Flag surface verified against simgit 0.3.0 (`sg/src/commands/worktree.rs`) and
 # the project's published stability contract in AGENTS.md, "What approval gates
@@ -34,25 +45,27 @@ from .command_rules import AnyMatcher, CommandSafetyRule
 # - Both launchers: `simgit` is canonical and `sg` is an equivalent alias built
 #   from the same source, so both carry the same authority.
 # - The global `--json` flag, which is accepted before or after the subcommand.
-# - Shell wrappers: `exec simgit ...`, `xargs simgit ...`.
+# - Shell wrappers: `exec simgit ...`, `xargs simgit ...`, including the
+#   portable `.exe`/`.cmd` spellings of the nested launcher.
 # - Value-taking options, so `-m --discard-dirty` (a commit message) and
 #   `--prefix --discard-dirty` (a branch prefix) are read as values.
 # - Fail-secure subcommand resolution, so an unknown option cannot hide a
 #   destructive subcommand.
-#
-# Unresolved shell expansions are deliberately not treated as uncertainty here.
-# simgit's documented allocator pattern passes the worktree path in a variable
-# (`simgit remove "$CLEANUP_TOKEN"`), so reviewing every expansion would review
-# every ordinary cleanup, while these two flags stay literal argv tokens in the
-# harness integrations this extension protects.
+# - Unresolved shell expansions that can occupy a flag slot, because argv then
+#   cannot prove either destructive flag absent.
 
+_SIMGIT_EXECUTABLES: tuple[str, ...] = ("simgit", "sg")
+_SIMGIT_WRAPPERS: tuple[str, ...] = ("exec", "xargs")
+# A wrapper names its child in argv, so the portable `.exe`/`.cmd` spellings are
+# enumerated here; the leading token is matched through `executable_names`.
 _SIMGIT_LAUNCHERS: tuple[tuple[str, ...], ...] = (
-    ("simgit",),
-    ("sg",),
-    ("exec", "simgit"),
-    ("exec", "sg"),
-    ("xargs", "simgit"),
-    ("xargs", "sg"),
+    *((executable,) for executable in _SIMGIT_EXECUTABLES),
+    *(
+        (wrapper, nested)
+        for wrapper in _SIMGIT_WRAPPERS
+        for executable in _SIMGIT_EXECUTABLES
+        for nested in sorted(executable_names(executable))
+    ),
 )
 _WRAPPER_LEADING_OPTIONS_WITH_VALUES = frozenset({"-n", "-P", "-I", "-L", "-s"})
 # `--json` is a global flag and may appear before or after the subcommand.
@@ -89,9 +102,9 @@ def _flagged_subcommand(
                 required_flags=frozenset({flag}),
                 global_flags=known_flags,
                 options_with_values=options_with_values,
-                allow_leading_options=launcher[0] in ("exec", "xargs"),
+                allow_leading_options=launcher[0] in _SIMGIT_WRAPPERS,
                 leading_options_with_values=(
-                    _WRAPPER_LEADING_OPTIONS_WITH_VALUES if launcher[0] in ("exec", "xargs") else frozenset()
+                    _WRAPPER_LEADING_OPTIONS_WITH_VALUES if launcher[0] in _SIMGIT_WRAPPERS else frozenset()
                 ),
                 fail_secure_unknown_options=True,
             )
@@ -118,17 +131,149 @@ _SIMGIT_DELETE_UNMERGED = AnyMatcher(
     matchers=(*_SIMGIT_REMOVE_DELETE_UNMERGED.matchers, *_SIMGIT_GC_DELETE_UNMERGED.matchers),
 )
 
+# A `$VAR`, `${VAR}`, `$(...)` or backtick token is decided by the shell after
+# Guard sees argv, so it can arrive as `--discard-dirty` or `--delete-unmerged`.
+# Only the slots a flag can occupy count as uncertainty: `remove` accepts one
+# positional target and `gc` accepts none, so an expansion inside that arity is
+# the documented allocator pattern (`simgit remove "$CLEANUP_TOKEN"`) and stays
+# quiet, while an expansion in an option slot, or one more argument than the
+# subcommand can place, cannot be a positional value.
+#
+# Quoting decides token count before Guard sees argv, which is what makes that
+# split hold: `simgit remove "$(git branch --show-current)"` arrives as one
+# token and fills the one slot `remove` has, while the unquoted form arrives as
+# several and overflows it.
+#
+# Residual, as simgit's own contract intends: a lone `simgit remove $FLAGS`
+# whose variable word-splits into a flag is spelled exactly like the ordinary
+# cleanup it imitates, and reviewing it would review every cleanup.
+_EXPANSION_MARKERS: frozenset[str] = frozenset({"$", "`"})
+
+
+@dataclass(frozen=True, slots=True)
+class SimgitFlagSlotExpansionMatcher:
+    """Match simgit commands whose unresolved expansion can supply a destructive flag."""
+
+    subcommand: str
+    positional_arity: int
+    options_with_values: frozenset[str]
+    known_flags: frozenset[str]
+    quiet_flags: frozenset[str]
+    launchers: tuple[tuple[str, ...], ...] = _SIMGIT_LAUNCHERS
+    leading_options_with_values: frozenset[str] = _WRAPPER_LEADING_OPTIONS_WITH_VALUES
+    expansion_markers: frozenset[str] = _EXPANSION_MARKERS
+
+    def match(self, command: CanonicalCommand) -> tuple[MatcherEvidence, ...]:
+        evidence: list[MatcherEvidence] = []
+        for index, segment in enumerate(command.segments):
+            if segment.executable is None:
+                continue
+            lowered_arguments = tuple(argument.lower() for argument in segment.arguments)
+            for launcher in self.launchers:
+                if not _segment_matches_executable(segment, executable_names(launcher[0])):
+                    continue
+                candidate_arguments = _without_options(lowered_arguments, frozenset(), _SIMGIT_GLOBAL_FLAGS)
+                if launcher[0] in _SIMGIT_WRAPPERS:
+                    candidate_arguments = _after_leading_options(
+                        candidate_arguments,
+                        self.leading_options_with_values,
+                        _SIMGIT_GLOBAL_FLAGS,
+                    )
+                prefix = (*launcher[1:], self.subcommand)
+                if candidate_arguments[: len(prefix)] != prefix:
+                    continue
+                if self._flag_slot_is_unresolved(candidate_arguments[len(prefix) :]):
+                    evidence.append(
+                        MatcherEvidence(
+                            segment_index=index,
+                            executable=segment.executable,
+                            detail="Matched a simgit argument slot that may expand to a destructive flag.",
+                        )
+                    )
+                break
+        return tuple(evidence)
+
+    def _flag_slot_is_unresolved(self, arguments: tuple[str, ...]) -> bool:
+        """Return whether an expansion sits where a flag, not a value, can land."""
+
+        if self.quiet_flags.intersection(arguments):
+            return False
+        positionals = 0
+        saw_expansion = False
+        options_ended = False
+        index = 0
+        while index < len(arguments):
+            argument = arguments[index]
+            if not options_ended and argument == "--":
+                options_ended = True
+                index += 1
+                continue
+            if not options_ended and len(argument) > 1 and argument.startswith("-"):
+                advance = known_option_advance(
+                    argument,
+                    options_with_values=self.options_with_values,
+                    known_flags=self.known_flags,
+                )
+                if advance is None:
+                    if self._is_unresolved(argument.partition("=")[0]):
+                        return True
+                    advance = 1
+                saw_expansion = saw_expansion or any(
+                    self._is_unresolved(token) for token in arguments[index : index + advance]
+                )
+                index += advance
+                continue
+            positionals += 1
+            saw_expansion = saw_expansion or self._is_unresolved(argument)
+            index += 1
+        return saw_expansion and positionals > self.positional_arity
+
+    def _is_unresolved(self, argument: str) -> bool:
+        """Return whether a token carries shell syntax argv cannot resolve."""
+
+        return any(marker in argument for marker in self.expansion_markers)
+
+
+_SIMGIT_FLAG_SLOT_EXPANSIONS: tuple[SimgitFlagSlotExpansionMatcher, ...] = (
+    SimgitFlagSlotExpansionMatcher(
+        subcommand="remove",
+        positional_arity=1,
+        options_with_values=_REMOVE_OPTIONS_WITH_VALUES,
+        known_flags=_SIMGIT_GLOBAL_FLAGS | _REMOVE_COMPANION_FLAGS | frozenset({"--help"}),
+        quiet_flags=frozenset({"--help"}),
+    ),
+    SimgitFlagSlotExpansionMatcher(
+        subcommand="gc",
+        positional_arity=0,
+        options_with_values=_GC_OPTIONS_WITH_VALUES,
+        known_flags=_SIMGIT_GLOBAL_FLAGS | _GC_COMPANION_FLAGS | frozenset({"--dry-run", "--help"}),
+        quiet_flags=frozenset({"--dry-run", "--help"}),
+    ),
+)
+
+# The literal-flag matchers stay free of custom children so the safe variants
+# keep cloning pure executable matchers; each rule adds the flag-slot overlay on
+# top. Both rules carry it because an unresolved flag slot proves neither flag
+# absent, and the two permissions are enabled independently.
+_SIMGIT_DISCARD_DIRTY_WITH_EXPANSIONS = AnyMatcher(
+    matchers=(*_SIMGIT_DISCARD_DIRTY.matchers, *_SIMGIT_FLAG_SLOT_EXPANSIONS),
+)
+_SIMGIT_DELETE_UNMERGED_WITH_EXPANSIONS = AnyMatcher(
+    matchers=(*_SIMGIT_DELETE_UNMERGED.matchers, *_SIMGIT_FLAG_SLOT_EXPANSIONS),
+)
+
 SIMGIT_COMMAND_RULES = (
     CommandSafetyRule(
         rule_id="command.simgit.discard-dirty",
         title="simgit uncommitted worktree discard",
         description=(
-            "Identifies `simgit remove --discard-dirty` and `simgit gc "
-            "--discard-dirty`, which delete a worktree that still holds "
-            "uncommitted and untracked files. A worktree lives outside the "
-            "source repository, so those files are not recoverable from the "
-            "repository afterwards. Without the flag both commands refuse a "
-            "dirty worktree and keep it."
+            "Identifies `--discard-dirty` on `simgit remove` and `simgit "
+            "gc`, which delete a worktree still holding uncommitted and "
+            "untracked files. A worktree lives outside the source "
+            "repository, so those files are not recoverable there. Without "
+            "the flag both commands refuse a dirty worktree. An invocation "
+            "whose unresolved expansion can occupy a flag slot is reviewed "
+            "too: argv cannot prove the flag absent."
         ),
         severity="critical",
         risk_classes=("destructive_shell",),
@@ -137,8 +282,9 @@ SIMGIT_COMMAND_RULES = (
             "Drop the flag: plain `simgit remove` refuses a dirty worktree and names the path it kept.",
             _COMMIT_ALTERNATIVE,
             "Preview the selection with `simgit gc --dry-run` before letting GC discard anything.",
+            "Expand shell variables and command substitutions so argv shows which flags simgit receives.",
         ),
-        matcher=_SIMGIT_DISCARD_DIRTY,
+        matcher=_SIMGIT_DISCARD_DIRTY_WITH_EXPANSIONS,
         default_mode="review",
         example_command="simgit remove /path/to/worktree --discard-dirty",
         safe_variants=(
@@ -163,7 +309,10 @@ SIMGIT_COMMAND_RULES = (
             "Identifies `--delete-unmerged` on `simgit remove` and `simgit "
             "gc`, which deletes a worktree's branch past Git's merged check "
             "and drops commits that were never integrated. Without it, branch "
-            "deletion retains unmerged branches and reports them as retained."
+            "deletion retains unmerged branches and reports them as retained. "
+            "A `remove` or `gc` invocation whose unresolved shell expansion "
+            "can occupy a flag slot is reviewed too, because argv cannot "
+            "prove the flag absent."
         ),
         severity="high",
         risk_classes=("destructive_shell",),
@@ -172,8 +321,9 @@ SIMGIT_COMMAND_RULES = (
             "Drop the flag: `--delete-branch` alone keeps an unmerged branch and reports it as retained.",
             "Merge or push the branch before deleting the worktree that produced it.",
             "Preview the selection with `simgit gc --dry-run` before deleting branches in bulk.",
+            "Expand shell variables and command substitutions so argv shows which flags simgit receives.",
         ),
-        matcher=_SIMGIT_DELETE_UNMERGED,
+        matcher=_SIMGIT_DELETE_UNMERGED_WITH_EXPANSIONS,
         default_mode="review",
         example_command="simgit remove feature-branch --delete-branch --delete-unmerged",
         safe_variants=(
