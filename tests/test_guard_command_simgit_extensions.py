@@ -66,6 +66,12 @@ SIMGIT_WRAPPER_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
     ("exec sg.exe remove agent/1234 --delete-branch --delete-unmerged", _DELETE_UNMERGED),
     ("xargs simgit.cmd gc --delete-branches --delete-unmerged", _DELETE_UNMERGED),
     ("xargs -n 1 sg.exe gc --discard-dirty", _DISCARD_DIRTY),
+    # A wrapper option that takes a separate value holds the slot the nested
+    # launcher would otherwise occupy; it must not hide the command behind it.
+    ("exec -a worker simgit remove /tmp/agent-work --discard-dirty", _DISCARD_DIRTY),
+    ("xargs -a /tmp/targets simgit gc --delete-branches --delete-unmerged", _DELETE_UNMERGED),
+    ("xargs -I {} sg gc --discard-dirty", _DISCARD_DIRTY),
+    ("xargs --arg-file=/tmp/targets simgit.exe gc --discard-dirty", _DISCARD_DIRTY),
 )
 
 # An unresolved expansion in a slot a flag can occupy cannot prove either
@@ -98,6 +104,20 @@ SIMGIT_EXPANSION_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
     ("simgit gc --prefix --dry-run $FLAGS", _DELETE_UNMERGED),
     ("sg gc --older-than --dry-run ${CLEANUP_FLAGS}", _DISCARD_DIRTY),
     ("simgit remove -m --help $FLAGS /tmp/agent-work", _DELETE_UNMERGED),
+    # The same wrapper options in front of an expansion: `--json` is the value
+    # of `-I` here, so reading it as a simgit global flag would lose the
+    # launcher prefix and with it the review.
+    ("xargs -I --json simgit gc $FLAGS", _DISCARD_DIRTY),
+    ("xargs -I --json simgit gc $FLAGS", _DELETE_UNMERGED),
+    ("xargs -I {} simgit gc $FLAGS", _DISCARD_DIRTY),
+    ("exec -a worker simgit remove /tmp/agent-work $FLAGS", _DISCARD_DIRTY),
+    ("xargs -a /tmp/targets simgit gc $FLAGS", _DELETE_UNMERGED),
+    # An unquoted expansion is field-split by the shell, so it can arrive as a
+    # flag and a value however few slots the subcommand has left.
+    ("simgit remove $CLEANUP_TOKEN --delete-branch", _DISCARD_DIRTY),
+    ("simgit remove $CLEANUP_TOKEN --delete-branch", _DELETE_UNMERGED),
+    ("sg remove $WORKTREE", _DISCARD_DIRTY),
+    ("simgit gc --prefix $PREFIX", _DELETE_UNMERGED),
 )
 
 SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
@@ -128,10 +148,11 @@ SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
     "simgit gc --help",
     "simgit remove /tmp/agent-work --discard-dirty --help",
     # An expansion that can only be the one positional `remove` accepts is the
-    # documented allocator pattern, not an unproven flag. Quoting keeps a
-    # command substitution inside that one slot.
+    # documented allocator pattern, not an unproven flag. Quoting is what bounds
+    # it to that one slot: quoted text is one word, and a single-quoted or
+    # escaped marker is not an expansion at all.
     'simgit remove "$CLEANUP_TOKEN"',
-    "simgit remove $CLEANUP_TOKEN --delete-branch",
+    "simgit remove '$CLEANUP_TOKEN'",
     'simgit remove --commit -m "$MESSAGE" "$CLEANUP_TOKEN"',
     'simgit remove "$(git branch --show-current)"',
     # Expansions confined to declared option values stay values.
@@ -153,6 +174,9 @@ SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
     "env simgit gc --discard-dirty --dry-run",
     "command sg remove /tmp/agent-work",
     'bash -c "simgit remove --help"',
+    # A wrapper option value in front of a safe command stays unmatched.
+    "exec -a worker simgit remove /tmp/agent-work",
+    "xargs -I {} simgit gc --dry-run",
 )
 
 

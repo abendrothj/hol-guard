@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 
 from .command_extension_matchers import executable_matcher, executable_names, safe_flag_variant
 from .command_extension_specs import CommandExtensionSpec
 from .command_matcher_contracts import MatcherEvidence
 from .command_model import CanonicalCommand
-from .command_option_parsing import known_option_advance, long_flag_assignment_is_enabled
-from .command_rules import (
-    AnyMatcher,
-    CommandSafetyRule,
-    _after_leading_options,
-    _segment_matches_executable,
-    _without_options,
+from .command_option_parsing import (
+    known_option_advance,
+    long_flag_assignment_is_enabled,
+    subcommand_parse_tails,
 )
+from .command_rules import AnyMatcher, CommandSafetyRule, _segment_matches_executable
 
 # Flag surface verified against simgit 0.3.0 (`sg/src/commands/worktree.rs`) and
 # the project's published stability contract in AGENTS.md, "What approval gates
@@ -46,28 +45,56 @@ from .command_rules import (
 #   from the same source, so both carry the same authority.
 # - The global `--json` flag, which is accepted before or after the subcommand.
 # - Shell wrappers: `exec simgit ...`, `xargs simgit ...`, including the
-#   portable `.exe`/`.cmd` spellings of the nested launcher.
+#   portable `.exe`/`.cmd` spellings of the nested launcher, and including the
+#   wrapper options that take a separate value before the nested launcher.
 # - Value-taking options, so `-m --discard-dirty` (a commit message) and
 #   `--prefix --discard-dirty` (a branch prefix) are read as values.
 # - Fail-secure subcommand resolution, so an unknown option cannot hide a
 #   destructive subcommand.
 # - Unresolved shell expansions that can occupy a flag slot, because argv then
-#   cannot prove either destructive flag absent.
+#   cannot prove either destructive flag absent, with quoting deciding whether
+#   an expansion is one word or an unbounded list of them.
 
 _SIMGIT_EXECUTABLES: tuple[str, ...] = ("simgit", "sg")
-_SIMGIT_WRAPPERS: tuple[str, ...] = ("exec", "xargs")
+# Wrapper options that take a separate value hold the slot the nested launcher
+# would otherwise occupy (`exec -a worker simgit ...`, `xargs -a FILE simgit
+# ...`). Guard lowercases argv before matching, which folds `-I` onto `-i`,
+# `-L` onto `-l`, `-E` onto `-e` and `-P` onto `-p` — pairs whose spellings
+# disagree about taking a separate value — so only options that survive that
+# fold with one arity are declared. Everything else is deliberately left
+# unknown: bounded parsing then explores both readings of the option and the
+# nested launcher is found in whichever reading places it, which is why an
+# unenumerated wrapper option cannot hide a destructive simgit command.
+_EXEC_LEADING_OPTIONS_WITH_VALUES = frozenset({"-a"})
+_XARGS_LEADING_OPTIONS_WITH_VALUES = frozenset(
+    {
+        "-a",
+        "-d",
+        "-n",
+        "-s",
+        "--arg-file",
+        "--delimiter",
+        "--max-args",
+        "--max-chars",
+        "--max-procs",
+        "--process-slot-var",
+    }
+)
+_WRAPPER_LEADING_OPTIONS_WITH_VALUES: Mapping[str, frozenset[str]] = {
+    "exec": _EXEC_LEADING_OPTIONS_WITH_VALUES,
+    "xargs": _XARGS_LEADING_OPTIONS_WITH_VALUES,
+}
 # A wrapper names its child in argv, so the portable `.exe`/`.cmd` spellings are
 # enumerated here; the leading token is matched through `executable_names`.
 _SIMGIT_LAUNCHERS: tuple[tuple[str, ...], ...] = (
     *((executable,) for executable in _SIMGIT_EXECUTABLES),
     *(
         (wrapper, nested)
-        for wrapper in _SIMGIT_WRAPPERS
+        for wrapper in _WRAPPER_LEADING_OPTIONS_WITH_VALUES
         for executable in _SIMGIT_EXECUTABLES
         for nested in sorted(executable_names(executable))
     ),
 )
-_WRAPPER_LEADING_OPTIONS_WITH_VALUES = frozenset({"-n", "-P", "-I", "-L", "-s"})
 # `--json` is a global flag and may appear before or after the subcommand.
 _SIMGIT_GLOBAL_FLAGS = frozenset({"--json"})
 _REMOVE_OPTIONS_WITH_VALUES = frozenset({"-m", "--message"})
@@ -83,6 +110,12 @@ _GC_COMPANION_FLAGS = frozenset({"--include-persistent", "--delete-branches", "-
 _COMMIT_ALTERNATIVE = (
     'Keep the work with `simgit remove --commit -m "<message>"`, which commits to the worktree branch first.'
 )
+
+
+def _leading_options_with_values(launcher: tuple[str, ...]) -> frozenset[str]:
+    """Return the wrapper options that can consume the nested launcher's slot."""
+
+    return _WRAPPER_LEADING_OPTIONS_WITH_VALUES.get(launcher[0], frozenset())
 
 
 def _flagged_subcommand(
@@ -102,10 +135,8 @@ def _flagged_subcommand(
                 required_flags=frozenset({flag}),
                 global_flags=known_flags,
                 options_with_values=options_with_values,
-                allow_leading_options=launcher[0] in _SIMGIT_WRAPPERS,
-                leading_options_with_values=(
-                    _WRAPPER_LEADING_OPTIONS_WITH_VALUES if launcher[0] in _SIMGIT_WRAPPERS else frozenset()
-                ),
+                allow_leading_options=launcher[0] in _WRAPPER_LEADING_OPTIONS_WITH_VALUES,
+                leading_options_with_values=_leading_options_with_values(launcher),
                 fail_secure_unknown_options=True,
             )
             for launcher in _SIMGIT_LAUNCHERS
@@ -133,20 +164,19 @@ _SIMGIT_DELETE_UNMERGED = AnyMatcher(
 
 # A `$VAR`, `${VAR}`, `$(...)` or backtick token is decided by the shell after
 # Guard sees argv, so it can arrive as `--discard-dirty` or `--delete-unmerged`.
-# Only the slots a flag can occupy count as uncertainty: `remove` accepts one
-# positional target and `gc` accepts none, so an expansion inside that arity is
-# the documented allocator pattern (`simgit remove "$CLEANUP_TOKEN"`) and stays
-# quiet, while an expansion in an option slot, or one more argument than the
-# subcommand can place, cannot be a positional value.
+# Two properties decide whether argv can still prove the flags absent.
 #
-# Quoting decides token count before Guard sees argv, which is what makes that
-# split hold: `simgit remove "$(git branch --show-current)"` arrives as one
-# token and fills the one slot `remove` has, while the unquoted form arrives as
-# several and overflows it.
+# Quoting decides how many words the token becomes. A quoted expansion is one
+# word and can only fill the slot it already occupies, so `simgit remove
+# "$CLEANUP_TOKEN"` — simgit's documented allocator cleanup — stays quiet. An
+# unquoted one is field-split by the shell into any number of words, so
+# `simgit remove $CLEANUP_TOKEN` can arrive as `--discard-dirty /tmp/worktree`
+# and is reviewed wherever it sits. Escaped and single-quoted markers expand to
+# nothing at all and count as quoted.
 #
-# Residual, as simgit's own contract intends: a lone `simgit remove $FLAGS`
-# whose variable word-splits into a flag is spelled exactly like the ordinary
-# cleanup it imitates, and reviewing it would review every cleanup.
+# Arity decides the rest. `remove` accepts one positional target and `gc` none,
+# so even a single-word expansion past that arity, or one spelled as an option
+# name (`--$FLAG`), cannot be a positional value and is reviewed.
 #
 # `--dry-run` and `--help` only make a run quiet when option parsing puts them
 # in a flag slot of their own. `simgit gc --prefix --dry-run $FLAGS` spends the
@@ -154,6 +184,55 @@ _SIMGIT_DELETE_UNMERGED = AnyMatcher(
 # still an unproven flag slot; reading the token before parsing would hand any
 # argv a two-token cloak for a destructive expansion.
 _EXPANSION_MARKERS: frozenset[str] = frozenset({"$", "`"})
+_QUOTES: frozenset[str] = frozenset({'"', "'"})
+
+
+def _quoted_expansions(segment_text: str) -> frozenset[str]:
+    """Return lowercased tokens whose every expansion marker is quoted or escaped.
+
+    Tokenization strips quotes long before a matcher sees argv, so the quoted
+    and unquoted spellings of one expansion are indistinguishable there. This
+    re-reads the segment to recover that context, and reports only what it can
+    prove quoted: a token this does not name stays capable of field splitting.
+    """
+
+    quoted: set[str] = set()
+    exposed: set[str] = set()
+    token: list[str] = []
+    carries_marker = False
+    marker_exposed = False
+    quote: str | None = None
+    index = 0
+    while index <= len(segment_text):
+        character = segment_text[index] if index < len(segment_text) else " "
+        if quote is None and character.isspace():
+            if carries_marker:
+                (exposed if marker_exposed else quoted).add("".join(token).lower())
+            token = []
+            carries_marker = False
+            marker_exposed = False
+            index += 1
+            continue
+        if quote != "'" and character == "\\":
+            escaped = segment_text[index + 1 : index + 2]
+            carries_marker = carries_marker or escaped in _EXPANSION_MARKERS
+            token.append(escaped)
+            index += 2
+            continue
+        if quote is None and character in _QUOTES:
+            quote = character
+            index += 1
+            continue
+        if character == quote:
+            quote = None
+            index += 1
+            continue
+        if character in _EXPANSION_MARKERS:
+            carries_marker = True
+            marker_exposed = marker_exposed or quote is None
+        token.append(character)
+        index += 1
+    return frozenset(quoted - exposed)
 
 
 @dataclass(frozen=True, slots=True)
@@ -166,7 +245,6 @@ class SimgitFlagSlotExpansionMatcher:
     known_flags: frozenset[str]
     quiet_flags: frozenset[str]
     launchers: tuple[tuple[str, ...], ...] = _SIMGIT_LAUNCHERS
-    leading_options_with_values: frozenset[str] = _WRAPPER_LEADING_OPTIONS_WITH_VALUES
     expansion_markers: frozenset[str] = _EXPANSION_MARKERS
 
     def match(self, command: CanonicalCommand) -> tuple[MatcherEvidence, ...]:
@@ -175,20 +253,24 @@ class SimgitFlagSlotExpansionMatcher:
             if segment.executable is None:
                 continue
             lowered_arguments = tuple(argument.lower() for argument in segment.arguments)
+            if not any(self._is_unresolved(argument) for argument in lowered_arguments):
+                continue
+            quoted_expansions = _quoted_expansions(segment.text)
             for launcher in self.launchers:
                 if not _segment_matches_executable(segment, executable_names(launcher[0])):
                     continue
-                candidate_arguments = _without_options(lowered_arguments, frozenset(), _SIMGIT_GLOBAL_FLAGS)
-                if launcher[0] in _SIMGIT_WRAPPERS:
-                    candidate_arguments = _after_leading_options(
-                        candidate_arguments,
-                        self.leading_options_with_values,
-                        _SIMGIT_GLOBAL_FLAGS,
-                    )
-                prefix = (*launcher[1:], self.subcommand)
-                if candidate_arguments[: len(prefix)] != prefix:
+                # An unknown wrapper option may or may not consume the token
+                # after it, so the nested launcher is looked for in every
+                # bounded reading rather than in one assumed option arity.
+                tails = subcommand_parse_tails(
+                    lowered_arguments,
+                    (*launcher[1:], self.subcommand),
+                    options_with_values=self.options_with_values | _leading_options_with_values(launcher),
+                    known_flags=self.known_flags,
+                )
+                if tails is not None and not tails:
                     continue
-                if self._flag_slot_is_unresolved(candidate_arguments[len(prefix) :]):
+                if tails is None or any(self._flag_slot_is_unresolved(tail, quoted_expansions) for tail in tails):
                     evidence.append(
                         MatcherEvidence(
                             segment_index=index,
@@ -199,11 +281,12 @@ class SimgitFlagSlotExpansionMatcher:
                 break
         return tuple(evidence)
 
-    def _flag_slot_is_unresolved(self, arguments: tuple[str, ...]) -> bool:
+    def _flag_slot_is_unresolved(self, arguments: tuple[str, ...], quoted_expansions: frozenset[str]) -> bool:
         """Return whether an expansion sits where a flag, not a value, can land."""
 
         positionals = 0
         saw_expansion = False
+        saw_field_splitting = False
         saw_quiet_flag = False
         unresolved_option_name = False
         options_ended = False
@@ -226,26 +309,39 @@ class SimgitFlagSlotExpansionMatcher:
                     advance = 1
                 elif self._occupies_quiet_flag_slot(argument):
                     saw_quiet_flag = True
-                saw_expansion = saw_expansion or any(
-                    self._is_unresolved(token) for token in arguments[index : index + advance]
+                window = arguments[index : index + advance]
+                saw_expansion = saw_expansion or any(self._is_unresolved(token) for token in window)
+                saw_field_splitting = saw_field_splitting or any(
+                    self._splits_into_words(token, quoted_expansions) for token in window
                 )
                 index += advance
                 continue
             positionals += 1
             saw_expansion = saw_expansion or self._is_unresolved(argument)
+            # Words after `--` are positional however the shell splits them.
+            saw_field_splitting = saw_field_splitting or (
+                not options_ended and self._splits_into_words(argument, quoted_expansions)
+            )
             index += 1
         # The quiet verdict is the whole parse's, not one token's: a preview or
         # help run anywhere in argv acts on nothing, and an unresolved option
         # name earlier in the same argv does not change that.
         if saw_quiet_flag:
             return False
-        return unresolved_option_name or (saw_expansion and positionals > self.positional_arity)
+        if unresolved_option_name or saw_field_splitting:
+            return True
+        return saw_expansion and positionals > self.positional_arity
 
     def _occupies_quiet_flag_slot(self, argument: str) -> bool:
         """Return whether a parsed option is a quiet flag in its own flag slot."""
 
         name, _, _ = argument.partition("=")
         return name in self.quiet_flags and long_flag_assignment_is_enabled(argument)
+
+    def _splits_into_words(self, argument: str, quoted_expansions: frozenset[str]) -> bool:
+        """Return whether the shell can split one token into a flag and a value."""
+
+        return self._is_unresolved(argument) and argument not in quoted_expansions
 
     def _is_unresolved(self, argument: str) -> bool:
         """Return whether a token carries shell syntax argv cannot resolve."""
