@@ -118,6 +118,13 @@ SIMGIT_EXPANSION_REVIEW_COMMANDS: tuple[tuple[str, str], ...] = (
     ("simgit remove $CLEANUP_TOKEN --delete-branch", _DELETE_UNMERGED),
     ("sg remove $WORKTREE", _DISCARD_DIRTY),
     ("simgit gc --prefix $PREFIX", _DELETE_UNMERGED),
+    # Quoting bounds one expansion to one word, but not `"$@"` or an array
+    # expanded with `[@]`: those emit one word per element, so a caller's own
+    # argv can still place a destructive flag after the target.
+    ('simgit remove "$@"', _DISCARD_DIRTY),
+    ('simgit remove "$@"', _DELETE_UNMERGED),
+    ('simgit remove "${@}" --delete-branch', _DELETE_UNMERGED),
+    ('sg remove "${ARGS[@]}"', _DISCARD_DIRTY),
 )
 
 SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
@@ -155,6 +162,10 @@ SIMGIT_UNMATCHED_COMMANDS: tuple[str, ...] = (
     "simgit remove '$CLEANUP_TOKEN'",
     'simgit remove --commit -m "$MESSAGE" "$CLEANUP_TOKEN"',
     'simgit remove "$(git branch --show-current)"',
+    # `"$*"` and `"${args[*]}"` join their elements into one word, so they stay
+    # inside the one slot `remove` has.
+    'simgit remove "$*"',
+    'simgit remove "${ARGS[*]}"',
     # Expansions confined to declared option values stay values.
     'simgit gc --prefix "$PREFIX" --older-than "$WINDOW"',
     'simgit remove --commit -m "$(date +%F)" /tmp/agent-work',

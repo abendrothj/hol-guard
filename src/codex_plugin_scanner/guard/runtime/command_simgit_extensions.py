@@ -172,7 +172,10 @@ _SIMGIT_DELETE_UNMERGED = AnyMatcher(
 # unquoted one is field-split by the shell into any number of words, so
 # `simgit remove $CLEANUP_TOKEN` can arrive as `--discard-dirty /tmp/worktree`
 # and is reviewed wherever it sits. Escaped and single-quoted markers expand to
-# nothing at all and count as quoted.
+# nothing at all and count as quoted. Quoting does not bound `"$@"`, `"${@}"`
+# or `"${args[@]}"`, which expand to one word per element however they are
+# quoted, so those keep the unquoted verdict; `"$*"` and `"${args[*]}"` join
+# their elements into one word and keep the quoted one.
 #
 # Arity decides the rest. `remove` accepts one positional target and `gc` none,
 # so even a single-word expansion past that arity, or one spelled as an option
@@ -229,10 +232,27 @@ def _quoted_expansions(segment_text: str) -> frozenset[str]:
             continue
         if character in _EXPANSION_MARKERS:
             carries_marker = True
-            marker_exposed = marker_exposed or quote is None
+            marker_exposed = (
+                marker_exposed or quote is None or (quote == '"' and _expands_to_many_words(segment_text, index))
+            )
         token.append(character)
         index += 1
     return frozenset(quoted - exposed)
+
+
+def _expands_to_many_words(segment_text: str, index: int) -> bool:
+    """Return whether an expansion yields one word per element despite quoting."""
+
+    if segment_text[index] != "$":
+        return False
+    following = segment_text[index + 1 : index + 2]
+    if following == "@":
+        return True
+    if following != "{":
+        return False
+    closing = segment_text.find("}", index + 2)
+    body = segment_text[index + 2 :] if closing < 0 else segment_text[index + 2 : closing]
+    return body.startswith("@") or "[@]" in body
 
 
 @dataclass(frozen=True, slots=True)
