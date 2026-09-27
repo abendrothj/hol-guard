@@ -401,12 +401,12 @@ def ensure_guard_daemon(
                 _schedule_duplicate_guard_daemon_retirement(guard_home)
                 return existing_url
             if existing_url is not None:
-                retire_all_guard_daemons_for_home(guard_home)
+                retire_all_guard_daemons_for_home(guard_home, deadline=start_deadline)
                 if not guard_daemon_retirement_is_complete(guard_home):
                     raise RuntimeError("Existing Guard daemon could not be retired safely.")
                 clear_guard_daemon_state(guard_home)
         if state_path.is_file() and _load_authenticated_daemon_identity(guard_home) is None:
-            retire_all_guard_daemons_for_home(guard_home)
+            retire_all_guard_daemons_for_home(guard_home, deadline=start_deadline)
             if not _daemon_lifecycle_artifact_is_exact_tombstone(state_path):
                 raise RuntimeError("Untrusted Guard daemon state could not be retired safely.")
             _remove_invalid_daemon_discovery_key(guard_home)
@@ -430,17 +430,20 @@ def ensure_guard_daemon(
             if inflight_url is not None:
                 _schedule_duplicate_guard_daemon_retirement(guard_home)
                 return inflight_url
-            retire_all_guard_daemons_for_home(guard_home)
+            retire_all_guard_daemons_for_home(guard_home, deadline=start_deadline)
             if not guard_daemon_retirement_is_complete(guard_home):
                 raise RuntimeError("In-progress Guard daemon launch could not be retired safely.")
         if os.name == "nt" and (
             _pending_launch_path(guard_home).is_file()
             or load_authenticated_guard_daemon_pending_launch(guard_home) is not None
         ):
-            retire_all_guard_daemons_for_home(guard_home)
+            retire_all_guard_daemons_for_home(guard_home, deadline=start_deadline)
             if not _guard_daemon_pending_launch_state_is_resolved(guard_home):
                 raise RuntimeError("A previous Guard daemon launch could not be retired safely.")
         clear_guard_daemon_state(guard_home)
+        # setsid() keeps hook workers alive after the daemon exits. They hold
+        # the local store, so the replacement never publishes daemon state.
+        reap_orphaned_daemon_workers(deadline=start_deadline)
         for candidate_port in _candidate_ports(guard_home, preferred_port=preferred_port):
             remaining_start_time = start_deadline - time.monotonic()
             if remaining_start_time <= 0:
@@ -634,6 +637,7 @@ def retire_all_guard_daemons_for_home(
     guard_home: Path,
     *,
     keep_port: int | None = None,
+    deadline: float | None = None,
 ) -> list[int]:
     """Stop Guard daemon processes for one guard home, optionally keeping one port alive."""
     retired: list[int] = []
@@ -732,7 +736,62 @@ def retire_all_guard_daemons_for_home(
             empty_inventory_confirmed = _guard_daemon_process_inventory_for_guard_home(guard_home) == []
         if empty_inventory_confirmed and keep_port is None:
             _reconcile_invalid_daemon_lifecycle_artifacts(guard_home)
+    reap_orphaned_daemon_workers(deadline=deadline)
     return retired
+
+
+def reap_orphaned_daemon_workers(*, deadline: float | None = None) -> None:
+    """Stop hook workers whose daemon parent is already gone."""
+
+    if os.name == "nt":
+        return
+    if deadline is not None and time.monotonic() >= deadline:
+        return
+    from .orphaned_daemon_workers import (
+        orphaned_daemon_workers,
+        parse_process_snapshot,
+        terminate_orphaned_daemon_workers,
+    )
+
+    ps_path = _trusted_posix_ps_path()
+    if ps_path is None:
+        return
+    query_timeout = _GUARD_DAEMON_PROCESS_QUERY_TIMEOUT_SECONDS
+    if deadline is not None:
+        query_timeout = min(query_timeout, deadline - time.monotonic())
+    if query_timeout <= 0:
+        return
+    output = _bounded_process_query_stdout(
+        [ps_path, "-axww", "-o", "pid=,ppid=,state=,command="],
+        timeout_seconds=query_timeout,
+    )
+    if output is None:
+        return
+    grace_seconds = 1.0
+    if deadline is not None:
+        grace_seconds = min(grace_seconds, max(0.0, deadline - time.monotonic()))
+    terminate_orphaned_daemon_workers(
+        orphaned_daemon_workers(parse_process_snapshot(output)),
+        command_for_pid=_orphan_worker_command,
+        start_token_for_pid=process_start_token,
+        grace_seconds=grace_seconds,
+    )
+
+
+def _orphan_worker_command(pid: int) -> str | None:
+    if pid <= 1:
+        return None
+    ps_path = _trusted_posix_ps_path()
+    if ps_path is None:
+        return None
+    output = _bounded_process_query_stdout(
+        [ps_path, "-p", str(pid), "-ww", "-o", "command="],
+        timeout_seconds=0.5,
+    )
+    if output is None:
+        return None
+    command = output.strip()
+    return command or None
 
 
 def guard_daemon_retirement_is_complete(guard_home: Path) -> bool:
@@ -2253,24 +2312,33 @@ def _linux_proc_process_entries(proc_root: Path = Path("/proc")) -> list[tuple[i
 
 
 def _terminate_bounded_process_query(process: subprocess.Popen[bytes]) -> None:
+    pid = getattr(process, "pid", None)
+    wait = getattr(process, "wait", None)
+    poll = getattr(process, "poll", None)
     if os.name == "nt":
+        terminate = getattr(process, "terminate", None)
+        if callable(terminate):
+            with suppress(OSError):
+                terminate()
+    elif isinstance(pid, int) and pid > 0:
         with suppress(OSError):
-            process.terminate()
-    else:
-        with suppress(OSError):
-            os.killpg(process.pid, signal.SIGTERM)
-    with suppress(subprocess.TimeoutExpired):
-        _ = process.wait(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
-    if process.poll() is not None:
+            os.killpg(pid, signal.SIGTERM)
+    if callable(wait):
+        with suppress(subprocess.TimeoutExpired):
+            _ = wait(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
+    if callable(poll) and poll() is not None:
         return
     if os.name == "nt":
+        kill = getattr(process, "kill", None)
+        if callable(kill):
+            with suppress(OSError):
+                kill()
+    elif isinstance(pid, int) and pid > 0:
         with suppress(OSError):
-            process.kill()
-    else:
-        with suppress(OSError):
-            os.killpg(process.pid, signal.SIGKILL)
-    with suppress(subprocess.TimeoutExpired):
-        _ = process.wait(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
+            os.killpg(pid, signal.SIGKILL)
+    if callable(wait):
+        with suppress(subprocess.TimeoutExpired):
+            _ = wait(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
 
 
 def _capture_bounded_process_query_stdout(
@@ -2312,7 +2380,8 @@ def _bounded_process_query_stdout(
         process = _spawn_bounded_process_query(command)
     except (OSError, subprocess.SubprocessError, ValueError):
         return None
-    if process.stdout is None:
+    stdout = getattr(process, "stdout", None)
+    if stdout is None:
         _terminate_bounded_process_query(process)
         return None
 
@@ -2321,7 +2390,7 @@ def _bounded_process_query_stdout(
     errors: list[OSError | ValueError] = []
     reader = threading.Thread(
         target=_capture_bounded_process_query_stdout,
-        args=(process.stdout, captured, output_limit_bytes, overflow, errors),
+        args=(stdout, captured, output_limit_bytes, overflow, errors),
         name="guard-daemon-process-query",
         daemon=True,
     )
@@ -2350,7 +2419,7 @@ def _bounded_process_query_stdout(
             reader.join(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
             if reader.is_alive():
                 with suppress(OSError, ValueError):
-                    process.stdout.close()
+                    stdout.close()
                 reader.join(timeout=_GUARD_DAEMON_PROCESS_QUERY_TERMINATE_GRACE_SECONDS)
 
     if timed_out or overflow.is_set() or errors or reader.is_alive():
@@ -2430,8 +2499,18 @@ def _guard_home_from_command_parts(parts: list[str]) -> Path | None:
         return frozen_context[0]
     for index, part in enumerate(parts):
         if part == "--guard-home" and index + 1 < len(parts):
-            return Path(parts[index + 1])
+            value = parts[index + 1]
+            return Path(value) if value else None
+        if part.startswith("--guard-home="):
+            value = part.split("=", 1)[1]
+            return Path(value) if value else None
     return None
+
+
+def _implicit_daemon_guard_home() -> Path:
+    from ..config import resolve_guard_home
+
+    return resolve_guard_home(None)
 
 
 def _guard_daemon_port_from_command(command: str) -> int | None:
@@ -2474,7 +2553,12 @@ def _split_process_command(command: str) -> list[str] | None:
         return None
 
 
+_HOOK_LAUNCHER_ARGS = frozenset({"__guard-bounded-hook", "__guard-cursor-hook"})
+
+
 def _guard_daemon_command_parts_match(parts: list[str]) -> bool:
+    if any(part in _HOOK_LAUNCHER_ARGS for part in parts):
+        return False
     if _frozen_daemon_serve_context(parts) is not None:
         return True
     for index in range(len(parts) - 1):
@@ -2582,15 +2666,18 @@ def _guard_daemon_process_inventory_for_guard_home(
         if not _guard_daemon_command_parts_match(parts):
             continue
         command_guard_home = _guard_home_from_command_parts(parts)
-        port = _guard_daemon_port_from_command(command_line)
-        if command_guard_home is None or port is None:
-            return None
+        if command_guard_home is None:
+            command_guard_home = _implicit_daemon_guard_home()
         try:
             matches_home = command_guard_home.resolve() == guard_home.resolve()
         except OSError:
             matches_home = command_guard_home == guard_home
-        if matches_home:
-            processes.append((pid, port))
+        if not matches_home:
+            continue
+        port = _guard_daemon_port_from_command(command_line)
+        if port is None:
+            return None
+        processes.append((pid, port))
     return sorted(processes, key=lambda item: item[1])
 
 
@@ -2843,7 +2930,24 @@ def _guard_daemon_pid_is_spawned_launch(pid: int, expected_pid: int) -> bool:
 def _guard_daemon_pid_is_proven_dead(pid: int) -> bool:
     if os.name == "nt":
         return windows_process_liveness(pid) is False
+    if _guard_daemon_child_has_exited(pid):
+        return True
     return not _guard_daemon_pid_is_running(pid)
+
+
+def _guard_daemon_child_has_exited(pid: int) -> bool:
+    """Observe an exited child without consuming its owner's process status."""
+    required = ("waitid", "P_PID", "WEXITED", "WNOHANG", "WNOWAIT", "CLD_EXITED", "CLD_KILLED", "CLD_DUMPED")
+    if pid <= 0 or not all(hasattr(os, name) for name in required):
+        return False
+    try:
+        result = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+    except (OSError, ValueError, OverflowError):
+        # Non-children and unsupported platforms retain the existing liveness proof.
+        return False
+    return (
+        result is not None and result.si_pid == pid and result.si_code in (os.CLD_EXITED, os.CLD_KILLED, os.CLD_DUMPED)
+    )
 
 
 def _wait_for_guard_daemon_pid_death(pid: int, *, timeout: float = 1.0) -> bool:
@@ -2878,7 +2982,7 @@ def _guard_daemon_pid_command_identity(
         return True
     command_guard_home = _guard_home_from_command_parts(parts)
     if command_guard_home is None:
-        return None
+        command_guard_home = _implicit_daemon_guard_home()
     try:
         return command_guard_home.resolve() == expected_guard_home.resolve()
     except OSError:
@@ -3090,13 +3194,66 @@ def _guard_daemon_recovery_lock(guard_home: Path, *, timeout_seconds: float | No
         thread_lock.release()
 
 
+def _same_daemon_invocation(left: str, right: str) -> bool:
+    """Return whether two command lines are the same Guard daemon serve invocation."""
+
+    left_parts = _split_process_command(left)
+    right_parts = _split_process_command(right)
+    if left_parts is None or right_parts is None:
+        return False
+    if not _guard_daemon_command_parts_match(left_parts) or not _guard_daemon_command_parts_match(right_parts):
+        return False
+    left_home = _guard_home_from_command_parts(left_parts)
+    right_home = _guard_home_from_command_parts(right_parts)
+    left_port = _guard_daemon_port_from_command(left)
+    right_port = _guard_daemon_port_from_command(right)
+    if left_home is None or right_home is None or left_port is None or right_port is None:
+        return False
+    try:
+        homes_match = left_home.resolve() == right_home.resolve()
+    except (OSError, NotImplementedError, RuntimeError, ValueError):
+        homes_match = os.path.normcase(str(left_home)) == os.path.normcase(str(right_home))
+    return homes_match and left_port == right_port
+
+
+def _windows_venv_launcher_parent_pid() -> int | None:
+    """Ignore the Windows venv redirector that stays alive beside the real interpreter.
+
+    ``Scripts\\python.exe`` keeps the daemon command line and spawns the base
+    interpreter with the same arguments. That parent is not a second daemon.
+    A competing daemon is still rejected, and the owner file lock still
+    serializes the slot when the parent really holds it.
+    """
+
+    if os.name != "nt":
+        return None
+    parent_pid = os.getppid()
+    if parent_pid <= 0 or parent_pid == os.getpid():
+        return None
+    parent_command = windows_processes.windows_process_command_line(parent_pid)
+    own_command = windows_processes.windows_process_command_line(os.getpid())
+    if parent_command is None or own_command is None:
+        return None
+    if not _same_daemon_invocation(parent_command, own_command):
+        return None
+    return parent_pid
+
+
+def _inventory_has_competing_daemon(inventory: list[tuple[int, int]]) -> bool:
+    ignored = {os.getpid()}
+    launcher_parent = _windows_venv_launcher_parent_pid()
+    if launcher_parent is not None:
+        ignored.add(launcher_parent)
+    return any(pid not in ignored for pid, _port in inventory)
+
+
 def acquire_guard_daemon_owner_lock(guard_home: Path) -> BinaryIO:
     """Claim the single daemon slot before any background worker can read secrets."""
 
     inventory = _guard_daemon_process_inventory_for_guard_home(guard_home)
     if inventory is None:
         raise RuntimeError("Guard could not verify that the daemon slot is available.")
-    if any(pid != os.getpid() for pid, _port in inventory):
+    if _inventory_has_competing_daemon(inventory):
         raise RuntimeError("A Guard daemon is already active for this Guard home.")
     lock_path = guard_home / _GUARD_DAEMON_OWNER_LOCK_FILE
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -3105,7 +3262,7 @@ def acquire_guard_daemon_owner_lock(guard_home: Path) -> BinaryIO:
         handle.close()
         raise RuntimeError("A Guard daemon is already active for this Guard home.")
     inventory = _guard_daemon_process_inventory_for_guard_home(guard_home)
-    if inventory is None or any(pid != os.getpid() for pid, _port in inventory):
+    if inventory is None or _inventory_has_competing_daemon(inventory):
         _unlock_daemon_start_file(handle)
         handle.close()
         raise RuntimeError("A Guard daemon is already active for this Guard home.")

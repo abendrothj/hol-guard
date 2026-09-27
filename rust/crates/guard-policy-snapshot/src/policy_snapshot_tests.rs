@@ -14,6 +14,7 @@ fn policy() -> EffectiveNativePolicyV3 {
         harness_actions: BTreeMap::new(),
         publisher_actions: BTreeMap::new(),
         artifact_actions: BTreeMap::new(),
+        mcp_tool_actions: BTreeMap::new(),
         sandbox_analysis: "off".into(),
         receipt_redaction_level: "full".into(),
     }
@@ -38,6 +39,7 @@ fn snapshot(generation: u64, key: &[u8]) -> PolicySnapshotV3 {
             workspace_binding: "request-source".into(),
         },
         effective_policy,
+        command_extensions: None,
         issued_at_ms: 100,
         expires_at_ms: 1_000,
         integrity: SnapshotIntegrityV3 {

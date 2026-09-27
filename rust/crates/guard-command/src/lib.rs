@@ -1,4 +1,16 @@
 #![forbid(unsafe_code)]
+mod command_ascii_comparison;
+mod command_common_cli_matchers;
+pub mod command_compatibility;
+mod command_database_matchers;
+mod command_operand_matchers;
+mod command_option_parsing;
+mod command_specialized_matchers;
+mod command_structured_matchers;
+mod executable_flag_contract;
+pub mod native_command_controls;
+pub mod native_command_program;
+mod parser_wrappers;
 pub mod pretool;
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +65,8 @@ pub struct CommandSegmentV1 {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CanonicalCommandV1 {
+    #[serde(skip)]
+    pub(crate) exact_raw_text: bool,
     pub normalized_text: String,
     pub dialect: String,
     pub transport: String,
@@ -85,6 +99,10 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
     if raw.is_empty() {
         return Err("command_text_empty".to_owned());
     }
+    // Unquoted Windows paths keep backslash separators. Quoted POSIX escapes
+    // stay intact, and cmd/PowerShell stay uncertain until they have their own
+    // separator and quoting rules.
+    let preserve_unquoted_backslash = cfg!(windows) && request.dialect == "posix";
     if request.dialect != "posix" || request.transport != "shell_string" {
         return Ok(uncertain(request, raw, "unsupported_dialect_or_transport"));
     }
@@ -92,9 +110,13 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
         return Ok(uncertain(request, raw, "command_byte_limit_exceeded"));
     }
 
-    let raw_segments = match split_execution_segments(raw) {
-        Ok(value) => value,
-        Err(reason) => return Ok(uncertain(request, raw, reason)),
+    let raw_segments = if let Some(value) = contained_compile_check_segments(raw) {
+        value
+    } else {
+        match split_execution_segments(raw, preserve_unquoted_backslash) {
+            Ok(value) => value,
+            Err(reason) => return Ok(uncertain(request, raw, reason)),
+        }
     };
     if raw_segments.len() > MAX_COMMAND_SEGMENTS {
         return Ok(uncertain(request, raw, "command_segment_limit_exceeded"));
@@ -105,7 +127,7 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
     let mut total_tokens = 0usize;
     for raw_segment in raw_segments {
         let text: String = chars[raw_segment.start..raw_segment.end].iter().collect();
-        let tokens = match shell_tokens(&text) {
+        let tokens = match shell_tokens(&text, preserve_unquoted_backslash) {
             Ok(value) => value,
             Err(reason) => return Ok(uncertain(request, raw, reason)),
         };
@@ -115,24 +137,99 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
         }
 
         let mut environment_names = Vec::new();
+        let mut effective_tokens = None;
         let mut executable_index = 0usize;
-        while executable_index < tokens.len() {
-            let Some(name) = assignment_name(&tokens[executable_index]) else {
-                break;
+        let mut wrapper_chain = Vec::new();
+        let mut nested_text = None;
+        loop {
+            let current_tokens = effective_tokens.as_ref().unwrap_or(&tokens);
+            while executable_index < current_tokens.len() {
+                let Some(name) = assignment_name(&current_tokens[executable_index]) else {
+                    break;
+                };
+                environment_names.push(name.to_owned());
+                executable_index += 1;
+            }
+            let (next, sudo) = match parser_wrappers::unwrap_sudo(current_tokens, executable_index)
+            {
+                Ok(value) => value,
+                Err(reason) => return Ok(uncertain(request, raw, reason)),
             };
-            environment_names.push(name.to_owned());
-            executable_index += 1;
+            executable_index = next;
+            wrapper_chain.extend(sudo);
+            if wrapper_chain.len() > 4 {
+                return Ok(uncertain(request, raw, "command_wrapper_limit_exceeded"));
+            }
+            let step = match parser_wrappers::unwrap_supported(current_tokens, executable_index) {
+                Ok(Some(value)) => value,
+                Ok(None) => break,
+                Err(reason) => return Ok(uncertain(request, raw, reason)),
+            };
+            wrapper_chain.push(step.name.to_owned());
+            if wrapper_chain.len() > 4 {
+                return Ok(uncertain(request, raw, "command_wrapper_limit_exceeded"));
+            }
+            environment_names.extend(step.environment_names);
+            executable_index = step.next_index;
+            if let Some(script) = step.script {
+                let nested_segments =
+                    match split_execution_segments(&script, preserve_unquoted_backslash) {
+                        Ok(segments) if segments.len() == 1 => segments,
+                        _ => {
+                            return Ok(uncertain(
+                                request,
+                                raw,
+                                "nested_shell_script_not_yet_supported",
+                            ))
+                        }
+                    };
+                let chars: Vec<char> = script.chars().collect();
+                let nested = &nested_segments[0];
+                let effective_text: String = chars[nested.start..nested.end].iter().collect();
+                let nested_tokens = match shell_tokens(&effective_text, preserve_unquoted_backslash)
+                {
+                    Ok(value) => value,
+                    Err(reason) => return Ok(uncertain(request, raw, reason)),
+                };
+                total_tokens = total_tokens.saturating_add(nested_tokens.len());
+                if total_tokens > MAX_COMMAND_TOKENS {
+                    return Ok(uncertain(request, raw, "command_token_limit_exceeded"));
+                }
+                effective_tokens = Some(nested_tokens);
+                nested_text = Some(effective_text);
+                executable_index = 0;
+            }
         }
-        let executable = tokens.get(executable_index).cloned();
+        let effective = effective_tokens.as_ref().unwrap_or(&tokens);
+        let executable = effective.get(executable_index).cloned();
         let arguments = if executable.is_some() {
-            tokens[executable_index + 1..].to_vec()
+            effective[executable_index + 1..].to_vec()
         } else {
             Vec::new()
         };
+        // Native wrapper extraction is currently needed for simgit only.
+        // Other tools keep their original uncertain model and host floor.
+        if let Some(wrapper) = wrapper_chain.iter().find(|wrapper| *wrapper != "sudo") {
+            if !executable.as_deref().is_some_and(is_simgit_executable) {
+                let reason = if matches!(wrapper.as_str(), "exec" | "xargs") {
+                    "nested_command_executor_not_yet_supported"
+                } else {
+                    "transparent_wrapper_not_yet_supported"
+                };
+                return Ok(uncertain(request, raw, reason));
+            }
+        }
         if executable.as_deref().is_some_and(is_shell_control_keyword) {
             return Ok(uncertain(request, raw, "compound_shell_not_yet_supported"));
         }
-        if executable.as_deref().is_some_and(is_transparent_wrapper) {
+        if executable.as_deref().is_some_and(is_transparent_wrapper)
+            && !parser_wrappers::is_encoded_stdin_shell(
+                executable.as_deref(),
+                &arguments,
+                &raw_segment,
+                segments.last(),
+            )
+        {
             return Ok(uncertain(
                 request,
                 raw,
@@ -149,14 +246,21 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
                 "nested_command_executor_not_yet_supported",
             ));
         }
+        // Opaque substitutions can execute or supply arguments. Keep them
+        // visible for the bounded simgit flag matcher, never as generic words.
+        if let Some(reason) = active_expansion_reason(nested_text.as_deref().unwrap_or(&text)) {
+            if !executable.as_deref().is_some_and(is_simgit_executable) {
+                return Ok(uncertain(request, raw, reason));
+            }
+        }
         let path_overridden = environment_names.iter().any(|name| name == "PATH");
         segments.push(CommandSegmentV1 {
-            text,
+            text: nested_text.unwrap_or(text),
             tokens,
             executable,
             arguments,
             environment_names,
-            wrapper_chain: Vec::new(),
+            wrapper_chain,
             path_overridden,
             execution_context: format!("top:{}", raw_segment.group_index),
             pipeline_index: raw_segment.pipeline_index,
@@ -169,22 +273,44 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
     }
 
     let path_overridden = segments.iter().any(|segment| segment.path_overridden);
+    let wrapper_chain = segments
+        .iter()
+        .flat_map(|segment| segment.wrapper_chain.iter().cloned())
+        .collect::<Vec<_>>();
+    let parser_profile = if wrapper_chain.is_empty() {
+        "posix-simple-v1"
+    } else {
+        "posix-bounded-wrappers-v2"
+    };
     Ok(CanonicalCommandV1 {
+        exact_raw_text: true,
         normalized_text: raw.to_owned(),
         dialect: request.dialect.clone(),
         transport: request.transport.clone(),
         extraction_provenance: request.extraction_provenance.clone(),
-        wrapper_chain: Vec::new(),
+        wrapper_chain,
         segments,
         confidence: "exact".to_owned(),
         uncertainty_reason: None,
         path_overridden,
-        parser_profile: "posix-simple-v1".to_owned(),
+        parser_profile: parser_profile.to_owned(),
     })
+}
+
+fn is_simgit_executable(value: &str) -> bool {
+    let basename = executable_basename(value);
+    matches!(
+        basename
+            .strip_suffix(".exe")
+            .or_else(|| basename.strip_suffix(".cmd"))
+            .unwrap_or(basename),
+        "simgit" | "sg"
+    )
 }
 
 fn uncertain(request: &CommandModelRequestV1, raw: &str, reason: &str) -> CanonicalCommandV1 {
     CanonicalCommandV1 {
+        exact_raw_text: false,
         normalized_text: raw.to_owned(),
         dialect: request.dialect.clone(),
         transport: request.transport.clone(),
@@ -198,7 +324,167 @@ fn uncertain(request: &CommandModelRequestV1, raw: &str, reason: &str) -> Canoni
     }
 }
 
-fn split_execution_segments(command: &str) -> Result<Vec<RawSegment>, &'static str> {
+fn active_expansion_reason(text: &str) -> Option<&'static str> {
+    let mut quote = Quote::None;
+    let mut escaped = false;
+    let mut chars = text.chars();
+    while let Some(current) = chars.next() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if current == '\\' && quote != Quote::Single {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Quote::Single => {
+                if current == '\'' {
+                    quote = Quote::None;
+                }
+            }
+            Quote::Double | Quote::None => {
+                if current == '`' || (current == '$' && chars.clone().next() == Some('(')) {
+                    return Some("command_substitution_not_yet_supported");
+                }
+                if current == '$' && chars.clone().next() == Some('{') {
+                    return Some("parameter_expansion_not_yet_supported");
+                }
+                if current == '"' {
+                    quote = if quote == Quote::Double {
+                        Quote::None
+                    } else {
+                        Quote::Double
+                    };
+                } else if current == '\'' && quote == Quote::None {
+                    quote = Quote::Single;
+                }
+            }
+        }
+    }
+    None
+}
+
+// Keep only inspected, non-executing producers opaque; any other nested
+// command must remain uncertain rather than silently disappearing.
+fn safe_substitution(chars: &[char], start: usize, end: usize, backtick: bool) -> bool {
+    let begin = start + if backtick { 1 } else { 2 };
+    let inner: String = chars[begin..end].iter().collect();
+    if inner.contains('$') || inner.contains('`') {
+        return false;
+    }
+    let Ok(segments) = split_execution_segments(&inner, false) else {
+        return false;
+    };
+    if segments.len() != 1 {
+        return false;
+    }
+    let Ok(tokens) = shell_tokens(&inner, false) else {
+        return false;
+    };
+    match tokens.first().map(String::as_str) {
+        Some("printf") => tokens.len() >= 3 && tokens[1] == "--",
+        Some("cat") => tokens.len() == 2 && tokens[1].starts_with('/'),
+        Some("git") => tokens == ["git", "branch", "--show-current"],
+        _ => false,
+    }
+}
+
+// Return the closing delimiter without evaluating its contents. The caller
+// treats the entire inspected substitution as one opaque word fragment.
+fn substitution_end(chars: &[char], start: usize) -> Result<usize, &'static str> {
+    let backtick = chars[start] == '`';
+    let mut depth = 1usize;
+    let mut quote = Quote::None;
+    let mut escaped = false;
+    let mut index = start + if backtick { 1 } else { 2 };
+    while index < chars.len() {
+        let current = chars[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if current == '\\' && quote != Quote::Single {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        match quote {
+            Quote::Single => {
+                if current == '\'' {
+                    quote = Quote::None;
+                }
+            }
+            Quote::Double if current == '"' => quote = Quote::None,
+            Quote::Double | Quote::None => {
+                if current == '"' {
+                    quote = Quote::Double;
+                } else if current == '\'' && quote == Quote::None {
+                    quote = Quote::Single;
+                } else if current == '`' {
+                    if backtick && depth == 1 && safe_substitution(chars, start, index, true) {
+                        return Ok(index);
+                    }
+                    return Err("command_substitution_not_yet_supported");
+                } else if current == '$' && chars.get(index + 1) == Some(&'(') {
+                    if backtick {
+                        return Err("command_substitution_not_yet_supported");
+                    }
+                    depth += 1;
+                    index += 1;
+                } else if !backtick && current == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return if safe_substitution(chars, start, index, false) {
+                            Ok(index)
+                        } else {
+                            Err("command_substitution_not_yet_supported")
+                        };
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+    Err("malformed_shell_quoting")
+}
+
+fn parameter_end(chars: &[char], start: usize) -> Result<usize, &'static str> {
+    let mut index = start + 2;
+    if chars.get(index) == Some(&'@') || chars.get(index) == Some(&'*') {
+        index += 1;
+    } else {
+        if !chars
+            .get(index)
+            .is_some_and(|value| *value == '_' || value.is_ascii_alphabetic())
+        {
+            return Err("parameter_expansion_not_yet_supported");
+        }
+        while chars
+            .get(index)
+            .is_some_and(|value| *value == '_' || value.is_ascii_alphanumeric())
+        {
+            index += 1;
+        }
+        if chars.get(index) == Some(&'[') {
+            index += 1;
+            if !matches!(chars.get(index), Some('@' | '*')) || chars.get(index + 1) != Some(&']') {
+                return Err("parameter_expansion_not_yet_supported");
+            }
+            index += 2;
+        }
+    }
+    if chars.get(index) != Some(&'}') {
+        return Err("parameter_expansion_not_yet_supported");
+    }
+    Ok(index)
+}
+
+fn split_execution_segments(
+    command: &str,
+    preserve_unquoted_backslash: bool,
+) -> Result<Vec<RawSegment>, &'static str> {
     let chars: Vec<char> = command.chars().collect();
     let mut quote = Quote::None;
     let mut escaped = false;
@@ -229,7 +515,9 @@ fn split_execution_segments(command: &str) -> Result<Vec<RawSegment>, &'static s
                 } else if current == '\\' {
                     escaped = true;
                 } else if current == '`' || (current == '$' && chars.get(index + 1) == Some(&'(')) {
-                    return Err("command_substitution_not_yet_supported");
+                    index = substitution_end(&chars, index)?;
+                } else if current == '$' && chars.get(index + 1) == Some(&'{') {
+                    index = parameter_end(&chars, index)?;
                 }
                 index += 1;
                 continue;
@@ -240,10 +528,14 @@ fn split_execution_segments(command: &str) -> Result<Vec<RawSegment>, &'static s
         match current {
             '\'' => quote = Quote::Single,
             '"' => quote = Quote::Double,
+            '\\' if preserve_unquoted_backslash => {}
             '\\' => escaped = true,
-            '`' => return Err("command_substitution_not_yet_supported"),
+            '`' => index = substitution_end(&chars, index)?,
             '$' if chars.get(index + 1) == Some(&'(') => {
-                return Err("command_substitution_not_yet_supported");
+                index = substitution_end(&chars, index)?;
+            }
+            '$' if chars.get(index + 1) == Some(&'{') => {
+                index = parameter_end(&chars, index)?;
             }
             '$' if chars
                 .get(index + 1)
@@ -251,9 +543,30 @@ fn split_execution_segments(command: &str) -> Result<Vec<RawSegment>, &'static s
             {
                 return Err("non_posix_quoting_not_yet_supported");
             }
+            '#' if index == 0
+                || is_shell_token_whitespace(chars[index - 1])
+                || matches!(chars[index - 1], ';' | '|' | '&') =>
+            {
+                return Err("shell_comment_not_yet_supported");
+            }
+            '<' | '>' if is_stderr_to_stdout_redirect(&chars, index) => {}
             '<' | '>' => return Err("command_redirect_not_yet_supported"),
-            '(' | ')' | '{' | '}' => return Err("compound_shell_not_yet_supported"),
+            '(' | ')' => return Err("compound_shell_not_yet_supported"),
+            '{' | '}'
+                if (index == 0
+                    || is_shell_token_whitespace(chars[index - 1])
+                    || matches!(chars[index - 1], ';' | '&' | '|'))
+                    && chars.get(index + 1).is_none_or(|value| {
+                        is_shell_token_whitespace(*value) || matches!(*value, ';' | '&' | '|')
+                    }) =>
+            {
+                return Err("compound_shell_not_yet_supported");
+            }
             '&' => {
+                if is_stderr_to_stdout_redirect(&chars, index) {
+                    index += 1;
+                    continue;
+                }
                 if chars.get(index + 1) != Some(&'&') {
                     return Err("background_job_not_yet_supported");
                 }
@@ -324,6 +637,87 @@ fn split_execution_segments(command: &str) -> Result<Vec<RawSegment>, &'static s
     Ok(segments)
 }
 
+fn contained_compile_check_segments(command: &str) -> Option<Vec<RawSegment>> {
+    let chars: Vec<char> = command.chars().collect();
+    let and_index = chars.windows(2).position(|window| window == ['&', '&'])?;
+    if chars[and_index + 2..]
+        .windows(2)
+        .any(|window| window == ['&', '&'])
+    {
+        return None;
+    }
+    let (cd_start, cd_end) = trimmed_bounds(&chars, 0, and_index)?;
+    let (find_start, find_end) = trimmed_bounds(&chars, and_index + 2, chars.len())?;
+    let cd: String = chars[cd_start..cd_end].iter().collect();
+    let find: String = chars[find_start..find_end].iter().collect();
+    let cd_tokens = shell_tokens(&cd, false).ok()?;
+    let find_tokens = shell_tokens(&find, false).ok()?;
+    if cd_tokens.len() != 2
+        || cd_tokens.first().map(String::as_str) != Some("cd")
+        || !is_plain_cd_target(&cd_tokens[1])
+        || find_tokens.first().map(String::as_str) != Some("find")
+        || !is_contained_compile_check_arguments(&find_tokens[1..])
+    {
+        return None;
+    }
+    Some(vec![
+        RawSegment {
+            group_index: 0,
+            pipeline_index: 0,
+            start: cd_start,
+            end: cd_end,
+        },
+        RawSegment {
+            group_index: 1,
+            pipeline_index: 0,
+            start: find_start,
+            end: find_end,
+        },
+    ])
+}
+
+fn trimmed_bounds(chars: &[char], start: usize, end: usize) -> Option<(usize, usize)> {
+    let mut left = start;
+    let mut right = end;
+    while left < right && chars[left].is_whitespace() {
+        left += 1;
+    }
+    while right > left && chars[right - 1].is_whitespace() {
+        right -= 1;
+    }
+    (left < right).then_some((left, right))
+}
+
+fn is_stderr_to_stdout_redirect(chars: &[char], index: usize) -> bool {
+    let start = match chars.get(index) {
+        Some('&') => index.checked_sub(2),
+        Some('>') => index.checked_sub(1),
+        _ => None,
+    };
+    let Some(start) = start else {
+        return false;
+    };
+    let Some(redirect) = chars.get(start..start.saturating_add(4)) else {
+        return false;
+    };
+    redirect == ['2', '>', '&', '1']
+        && (start == 0 || is_shell_token_whitespace(chars[start - 1]))
+        && chars.get(start + 4).is_none_or(|value| {
+            is_shell_token_whitespace(*value) || matches!(*value, '|' | '&' | ';')
+        })
+}
+
+fn is_plain_cd_target(value: &str) -> bool {
+    !value.is_empty()
+        && !value.starts_with('-')
+        && !value.chars().any(|value| {
+            matches!(
+                value,
+                '$' | '`' | '<' | '>' | '|' | ';' | '&' | '(' | ')' | '{' | '}' | '\0'
+            )
+        })
+}
+
 fn push_segment(
     chars: &[char],
     start: usize,
@@ -352,14 +746,28 @@ fn push_segment(
     Ok(())
 }
 
-fn shell_tokens(command: &str) -> Result<Vec<String>, &'static str> {
+fn shell_tokens(command: &str, preserve_backslash: bool) -> Result<Vec<String>, &'static str> {
     let mut tokens = Vec::new();
     let mut token = String::new();
     let mut token_started = false;
     let mut quote = Quote::None;
     let mut escaped = false;
 
-    for current in command.chars() {
+    let chars: Vec<char> = command.chars().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let current = chars[index];
+        if !escaped
+            && quote != Quote::Single
+            && (current == '`' || (current == '$' && chars.get(index + 1) == Some(&'(')))
+        {
+            let end = substitution_end(&chars, index)?;
+            token.extend(chars[index..=end].iter());
+            token_started = true;
+            index = end + 1;
+            continue;
+        }
+        index += 1;
         if escaped {
             if quote == Quote::Double && current != '"' && current != '\\' {
                 token.push('\\');
@@ -396,6 +804,10 @@ fn shell_tokens(command: &str) -> Result<Vec<String>, &'static str> {
                 }
                 '"' => {
                     quote = Quote::Double;
+                    token_started = true;
+                }
+                '\\' if preserve_backslash => {
+                    token.push('\\');
                     token_started = true;
                 }
                 '\\' => {
@@ -501,10 +913,93 @@ fn is_nested_command_executor(executable: &str, arguments: &[String]) -> bool {
     ) {
         return true;
     }
+    if matches!(basename, "fd" | "fd.exe") {
+        return fd_arguments_execute_command(arguments);
+    }
     basename == "find"
+        && !is_contained_compile_check_arguments(arguments)
         && arguments
             .iter()
             .any(|argument| matches!(argument.as_str(), "-exec" | "-execdir" | "-ok" | "-okdir"))
+}
+
+fn fd_arguments_execute_command(arguments: &[String]) -> bool {
+    // fd substitutes filesystem search results into a subprocess invocation.
+    // Its exec modes need their own bounded source and execution proof; an
+    // exact shell tokenization must not silently treat them as a plain search.
+    let mut arguments = arguments.iter();
+    while let Some(argument) = arguments.next() {
+        if argument == "--" {
+            return false;
+        }
+        if matches!(argument.as_str(), "--exec" | "--exec-batch")
+            || argument.starts_with("--exec=")
+            || argument.starts_with("--exec-batch=")
+        {
+            return true;
+        }
+        if argument.starts_with("--") {
+            if matches!(
+                argument.as_str(),
+                "--base-directory"
+                    | "--changed-after"
+                    | "--changed-before"
+                    | "--changed-within"
+                    | "--color"
+                    | "--exact-depth"
+                    | "--exclude"
+                    | "--extension"
+                    | "--format"
+                    | "--ignore-file"
+                    | "--max-depth"
+                    | "--max-results"
+                    | "--min-depth"
+                    | "--owner"
+                    | "--path-separator"
+                    | "--search-path"
+                    | "--size"
+                    | "--threads"
+                    | "--type"
+            ) {
+                arguments.next();
+            }
+            continue;
+        }
+        let Some(cluster) = argument.strip_prefix('-') else {
+            continue;
+        };
+        for (offset, flag) in cluster.char_indices() {
+            if matches!(flag, 'x' | 'X') {
+                return true;
+            }
+            if matches!(flag, 'c' | 'd' | 'E' | 'e' | 'j' | 'o' | 'S' | 't') {
+                if offset + flag.len_utf8() == cluster.len() {
+                    arguments.next();
+                }
+                break;
+            }
+        }
+    }
+    false
+}
+
+fn is_contained_compile_check_arguments(arguments: &[String]) -> bool {
+    const EXPECTED: [&str; 9] = [
+        "src",
+        "-name",
+        "*.py",
+        "-exec",
+        "python",
+        "-m",
+        "py_compile",
+        "{}",
+        "+",
+    ];
+    arguments.len() == EXPECTED.len()
+        && arguments
+            .iter()
+            .zip(EXPECTED)
+            .all(|(actual, expected)| actual == expected)
 }
 
 #[cfg(test)]
@@ -564,6 +1059,18 @@ mod tests {
     }
 
     #[test]
+    fn unquoted_backslash_preservation_keeps_quoted_escapes() {
+        let tokens = shell_tokens(r#"printf "%s" "a\q" "a\$b" "a\"b" "a\\b""#, true).unwrap();
+        assert_eq!(tokens, ["printf", "%s", "a\\q", "a\\$b", "a\"b", "a\\b"]);
+        let path = shell_tokens(r"cmd /c echo C:\Work\file.txt", true).unwrap();
+        assert_eq!(path, ["cmd", "/c", "echo", r"C:\Work\file.txt"]);
+        let segments = split_execution_segments(r"dir C:\Work\", true).unwrap();
+        assert_eq!(segments.len(), 1);
+        let trailing = shell_tokens(r"dir C:\Work\", true).unwrap();
+        assert_eq!(trailing, ["dir", r"C:\Work\"]);
+    }
+
+    #[test]
     fn splits_pipeline_but_not_quoted_pipe() {
         let parsed = parse_command(&request("printf 'a|b' | grep b")).unwrap();
         assert_eq!(parsed.segments.len(), 2);
@@ -574,19 +1081,59 @@ mod tests {
     }
 
     #[test]
+    fn parses_frozen_contained_routine_forms_without_general_shell_expansion() {
+        let stderr_pipeline = parse_command(&request(
+            "cd workspace/service && bun run typecheck 2>&1 | head -40",
+        ))
+        .unwrap();
+        assert_eq!(
+            stderr_pipeline.confidence, "exact",
+            "{:?}",
+            stderr_pipeline.uncertainty_reason
+        );
+        assert_eq!(stderr_pipeline.segments.len(), 3);
+        assert_eq!(
+            stderr_pipeline.segments[1].arguments,
+            ["run", "typecheck", "2>&1"]
+        );
+        assert_eq!(stderr_pipeline.segments[2].tokens, ["head", "-40"]);
+
+        let compile_check = parse_command(&request(
+            "cd workspace/service && find src -name '*.py' -exec python -m py_compile {} +",
+        ))
+        .unwrap();
+        assert_eq!(compile_check.confidence, "exact");
+        assert_eq!(compile_check.segments.len(), 2);
+        assert_eq!(
+            compile_check.segments[1].arguments,
+            [
+                "src",
+                "-name",
+                "*.py",
+                "-exec",
+                "python",
+                "-m",
+                "py_compile",
+                "{}",
+                "+"
+            ]
+        );
+    }
+
+    #[test]
     fn marks_complex_shell_forms_uncertain_without_partial_segments() {
         for command in [
             "echo $(uname)",
             "cat <<EOF",
             "echo hello > out.txt",
             "sleep 1 &",
-            "sudo rm -rf /tmp/example",
-            "sh -c 'rm -rf /tmp/example'",
+            "sudo -s rm -rf /tmp/example",
+            "sh -c 'rm -rf /tmp/example; echo done'",
             "eval 'rm -rf /tmp/example'",
             "if true; then echo yes; fi",
             "[[ -f Cargo.toml ]]",
             "echo $'non-posix quote'",
-            "xargs rm -rf",
+            "xargs -P 8 rm -rf",
             "find . -exec rm {} ;",
         ] {
             let parsed = parse_command(&request(command)).unwrap();
