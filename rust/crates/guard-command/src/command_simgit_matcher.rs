@@ -279,7 +279,7 @@ fn flag_slot_candidate(
     expansion_kinds: &[Expansion],
     deadline: Option<Instant>,
 ) -> Result<bool, &'static str> {
-    let mut pending = vec![(start, 0usize, false)]; // index, positional count, -- ended options
+    let mut pending = vec![(start, 0usize, false, false)]; // index, positionals, -- ended options, deferred flag
     let mut visited = BTreeSet::new();
     while let Some(state) = pending.pop() {
         check_deadline(deadline)?;
@@ -289,12 +289,12 @@ fn flag_slot_candidate(
         if visited.len() > MAX_OPTION_PARSE_STATES {
             return Ok(true); // bounded uncertainty cannot establish absence
         }
-        let (index, positionals, ended) = state;
+        let (index, positionals, ended, deferred_flag) = state;
         let Some(argument) = arguments.get(index) else {
             continue;
         };
         if !ended && argument == "--" {
-            pending.push((index + 1, positionals, true));
+            pending.push((index + 1, positionals, true, deferred_flag));
         } else if !ended && argument.len() > 1 && argument.starts_with('-') {
             let name = argument
                 .split_once('=')
@@ -318,14 +318,14 @@ fn flag_slot_candidate(
                 if advance == 2 && expansion_kinds.get(index + 1) == Some(&Expansion::ManyWords) {
                     return Ok(true); // the option consumes the first word, not the rest
                 }
-                pending.push((index + advance, positionals, ended));
+                pending.push((index + advance, positionals, ended, deferred_flag));
             } else {
-                pending.push((index + 1, positionals, ended));
+                pending.push((index + 1, positionals, ended, deferred_flag));
                 if !argument.contains('=') {
                     if expansion_kinds.get(index + 1) == Some(&Expansion::ManyWords) {
                         return Ok(true);
                     }
-                    pending.push((index + 2, positionals, ended));
+                    pending.push((index + 2, positionals, ended, deferred_flag));
                 }
             }
         } else {
@@ -340,11 +340,16 @@ fn flag_slot_candidate(
             {
                 return Ok(true);
             }
-            pending.push((
-                index + 1,
-                positionals.saturating_add(1).min(grammar.arity + 1),
-                ended,
-            ));
+            let deferred_flag = deferred_flag
+                || (!ended
+                    && has_marker(argument)
+                    && expansion == Expansion::OneWord
+                    && positionals < grammar.arity);
+            let next_positionals = positionals.saturating_add(1).min(grammar.arity + 1);
+            if deferred_flag && next_positionals > grammar.arity {
+                return Ok(true); // a later positional can be the target instead
+            }
+            pending.push((index + 1, next_positionals, ended, deferred_flag));
         }
     }
     Ok(false)
@@ -425,6 +430,9 @@ mod tests {
             for command in [
                 "simgit remove $FLAGS",
                 "simgit remove work \"$FLAGS\"",
+                "simgit remove \"$FLAG\" work",
+                "simgit remove \"$FLAG\" -- work",
+                "simgit remove \"$(printf -- --discard-dirty)\" work",
                 "simgit remove \"$@\"",
                 "simgit remove \"${args[@]}\"",
                 "simgit gc \"$FLAGS\"",
@@ -446,6 +454,7 @@ mod tests {
                 "simgit remove work -- \"$FLAGS\"",
                 "simgit gc -- $FLAGS",
                 "simgit remove -m \"$FLAGS\" work",
+                "simgit remove -- \"$FLAG\" work",
             ] {
                 assert!(!matches(command, flag, None), "{command}");
             }

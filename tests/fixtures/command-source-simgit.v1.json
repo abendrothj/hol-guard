@@ -11206,6 +11206,69 @@
       "rule_id": "command.simgit.discard-dirty"
     },
     {
+      "command": "simgit remove \"$(printf -- --discard-dirty)\" work",
+      "disabled_permissions": [],
+      "enabled_extensions": [
+        "command.simgit"
+      ],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
+      "id": "quoted-flag-before-target-dirty",
+      "rule_id": "command.simgit.discard-dirty"
+    },
+    {
+      "command": "simgit remove \"$(printf -- --delete-unmerged)\" --delete-branch work",
+      "disabled_permissions": [],
+      "enabled_extensions": [
+        "command.simgit"
+      ],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
+      "id": "quoted-flag-before-target-unmerged",
+      "rule_id": "command.simgit.delete-unmerged"
+    },
+    {
+      "command": "simgit remove \"$FLAG\" work",
+      "disabled_permissions": [],
+      "enabled_extensions": [
+        "command.simgit"
+      ],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
+      "id": "quoted-variable-before-target-dirty",
+      "rule_id": "command.simgit.discard-dirty"
+    },
+    {
+      "command": "simgit remove \"$FLAG\" --delete-branch -- work",
+      "disabled_permissions": [],
+      "enabled_extensions": [
+        "command.simgit"
+      ],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
+      "id": "quoted-variable-before-target-unmerged",
+      "rule_id": "command.simgit.delete-unmerged"
+    },
+    {
+      "command": "simgit remove -- \"$FLAG\" work",
+      "disabled_permissions": [],
+      "enabled_extensions": [
+        "command.simgit"
+      ],
+      "expected_action": "review",
+      "expected_effective_segments": [],
+      "id": "quoted-variable-after-terminator",
+      "rule_id": "command.simgit.discard-dirty"
+    },
+    {
       "command": "simgit remove \"$CLEANUP_TOKEN\"",
       "disabled_permissions": [],
       "enabled_extensions": [
