@@ -32,6 +32,7 @@ class NativePolicySnapshotPublisherInputs:
 
     store: GuardStore  # pyright: ignore[reportUninitializedInstanceVariable]
     _command_control_runtime: ExtensionControlRuntime | None = None
+    _observe_extension_refresh: bool = False
     guard_home: Path  # pyright: ignore[reportUninitializedInstanceVariable]
     _condition: Condition  # pyright: ignore[reportUninitializedInstanceVariable]
     _acked: bool  # pyright: ignore[reportUninitializedInstanceVariable]
@@ -217,6 +218,25 @@ class NativePolicySnapshotPublisherInputs:
                     continue
                 merged[key] = _stricter_action(merged.get(key, "allow"), action)
             policy["mcp_tool_actions"] = bound_native_mcp_tool_actions(merged, required_blocks=required_blocks)
+        from .native_policy_snapshot_policy import _provider_action_map
+
+        provider_reader = getattr(self.store, "read_mcp_provider_choices", None)
+        if callable(provider_reader):
+            try:
+                provider_choices = _provider_action_map(provider_reader())
+            except sqlite3.Error as error:
+                raise NativePolicySnapshotError("native_policy_snapshot_policy_unavailable") from error
+            if provider_choices:
+                existing_provider = cast(dict[str, str], policy.get("mcp_provider_actions", {}))
+                merged_provider = dict(existing_provider)
+                for key, action in provider_choices.items():
+                    merged_provider[key] = _stricter_action(merged_provider.get(key, "review"), action)
+                policy["mcp_provider_actions"] = _provider_action_map(merged_provider)
+        provider_authority_reader = getattr(self.store, "read_mcp_provider_authority_hash", None)
+        if callable(provider_authority_reader):
+            provider_hash = provider_authority_reader()
+            if provider_hash is not None:
+                policy["mcp_provider_catalog_hash"] = provider_hash
         return policy
 
     def _compiled_command_extensions(self) -> dict[str, object]:
@@ -291,7 +311,21 @@ class NativePolicySnapshotPublisherInputs:
         )
         self._observed_policy_fingerprint = current_fingerprint
         changed = force_republish or previous_fingerprint != current_fingerprint
-        if changed or current_fingerprint[0] == "unavailable":
+        # Command-control churn under Watch must republish, but it must not
+        # withdraw the resident-validated observe snapshot. Withdrawing it
+        # makes the next review pause, and that pause is what churns the
+        # controls again. Policy, mode, and unavailable inputs still withdraw.
+        self._observe_extension_refresh = bool(
+            changed
+            and not force_republish
+            and previous_fingerprint is not None
+            and current_fingerprint[0] not in {"", "unavailable"}
+            and previous_fingerprint[0] == current_fingerprint[0]
+            and previous_fingerprint[1] == "observe"
+            and current_fingerprint[1] == "observe"
+            and previous_fingerprint[2] != current_fingerprint[2]
+        )
+        if (changed or current_fingerprint[0] == "unavailable") and not self._observe_extension_refresh:
             # A verified state change invalidates the previous ACK immediately,
             # including WAL-only mutations. Do not leave a readiness window
             # between observation and the publisher's next push attempt.

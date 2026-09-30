@@ -24,6 +24,7 @@ from codex_plugin_scanner.guard.runtime.extension_catalog_sync import (
 from codex_plugin_scanner.guard.runtime.extension_control_runtime import ExtensionControlRuntime
 from codex_plugin_scanner.guard.store import GuardStore
 from tests.managed_controls_activation_support import CAPABILITIES, parse_managed_bundle
+from tests.support.extension_freshness import requires_fresh_projections
 from tests.support.network import stub_authenticated_urlopen
 from tests.test_guard_runtime import _seed_guard_cloud
 
@@ -31,8 +32,8 @@ _VECTOR_PATH = (
     Path(__file__).resolve().parents[1]
     / "contracts/managed-controls/v1/policy-bundle-v2-extension-signature-vector.json"
 )
-_GUARD_RELEASE_CATALOG_DIGEST = "f8d982f20b958dafaae2c3c4a67ac5f3afbd65da8c6110b6de2a11ce58eb426d"
-_GUARD_RELEASE_PROJECTION_DIGEST = "sha256:b1f580bc58fa6c9282efffcb9eb5072d6db5e4c4e87d8f3ba9d50709dc562eae"
+_GUARD_RELEASE_CATALOG_DIGEST = "f23cdc42cd24ac9b4616b43f3507680b6dec9cb5545a78dbf0017b0608711b41"
+_GUARD_RELEASE_PROJECTION_DIGEST = "sha256:1447444559b993a9788e18a46a3d481e85b082a76af8be5aa71041f58a10466d"
 
 
 class _Response:
@@ -65,6 +66,7 @@ def _bundle() -> dict[str, object]:
     return value
 
 
+@requires_fresh_projections
 def test_signed_cloud_extension_projection_matches_shared_vector() -> None:
     vector_path = _VECTOR_PATH.with_name("extension-projection-digest-vector.json")
     vector = json.loads(vector_path.read_text())

@@ -64,6 +64,52 @@ fn decision(
 }
 
 #[test]
+fn packaged_program_is_admitted_once_and_exposes_explicit_coverage() {
+    let first = packaged_command_program().unwrap();
+    assert!(Arc::ptr_eq(&first, &packaged_command_program().unwrap()));
+    let catalog: serde_json::Value = serde_json::from_slice(include_bytes!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../../contracts/extensions/command-catalog.v1.json"
+    )))
+    .unwrap();
+    let entries = catalog["catalog"].as_array().unwrap();
+    let mut catalog_ids: Vec<&str> = entries
+        .iter()
+        .map(|entry| entry["extension_id"].as_str().unwrap())
+        .collect();
+    catalog_ids.sort_unstable();
+    let mut program_ids: Vec<String> = first
+        .extensions
+        .iter()
+        .map(|extension| extension.extension_id.clone())
+        .collect();
+    program_ids.sort();
+    assert_eq!(program_ids, catalog_ids);
+    let expected_rules: usize = entries
+        .iter()
+        .map(|entry| entry["rule_count"].as_u64().unwrap() as usize)
+        .sum();
+    assert_eq!(first.rules.len(), expected_rules);
+    let expected_capability_rules: usize = entries
+        .iter()
+        .flat_map(|entry| entry["rules"].as_array().unwrap().iter())
+        .filter(|rule| rule["matcher_kind"].as_str() == Some("native-capability.v1"))
+        .count();
+    assert_eq!(
+        first
+            .rules
+            .iter()
+            .filter(|rule| rule.matcher.is_none())
+            .count(),
+        expected_capability_rules
+    );
+    assert!(first
+        .runtime_coverage()
+        .iter()
+        .any(|(id, supported)| *id == "command.ollama.push" && *supported));
+}
+
+#[test]
 fn complete_observations_match_independent_python_reference_models() {
     let program = packaged_command_program().unwrap();
     let active = program
