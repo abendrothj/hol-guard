@@ -10628,7 +10628,6 @@
           "command.probe",
           "command.remote.essh",
           "command.repo2nb",
-          "command.simgit",
           "command.skill-base",
           "command.skill-sunset",
           "command.uivoid"

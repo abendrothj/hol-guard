@@ -85,7 +85,6 @@ fn expansions_respect_quote_context_positional_arity_and_terminators() {
             "simgit remove \"$TARGET\"",
             "simgit remove \"$(printf -- --discard-dirty)\"",
             "simgit remove '${FLAGS}'",
-            "simgit remove \\$FLAGS",
             "simgit remove \"$*\"",
             "simgit gc --prefix \"$FLAGS\"",
             "simgit remove work -- \"$FLAGS\"",
@@ -95,6 +94,8 @@ fn expansions_respect_quote_context_positional_arity_and_terminators() {
         ] {
             assert!(!matches(command, flag, None), "{command}");
         }
+        // Windows POSIX parsing keeps unquoted backslashes literal, so the expansion stays live.
+        assert_eq!(matches("simgit remove \\$FLAGS", flag, None), cfg!(windows));
     }
 }
 
