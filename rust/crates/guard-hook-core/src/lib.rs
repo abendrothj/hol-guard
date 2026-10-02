@@ -8,7 +8,7 @@ use guard_rules::{
     OUTPUT_TEXT_KEYS, PAYLOAD_OUTPUT_KEYS, REVIEWED_EXCERPT_CHARS,
 };
 use guard_scanner::scan_text;
-use guard_secure_fs::{classify_source_path, read_bounded, sensitive_path_family};
+use guard_secure_fs::{classify_scannable_source_path, read_bounded, sensitive_path_family};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
@@ -175,7 +175,38 @@ fn envelope_target(payload: &Value) -> Option<String> {
     None
 }
 
-fn sha256_text(text: &str) -> String {
+fn inline_local_content(payload: &Value) -> bool {
+    let Some(input) = payload
+        .get("tool_input")
+        .or_else(|| payload.get("toolInput"))
+    else {
+        return false;
+    };
+    let Some(input) = input.as_object() else {
+        return true;
+    };
+    let may_be_local = |value: &Value| {
+        value
+            .as_str()
+            .map(local_samples_should_be_unsuppressed)
+            .unwrap_or(true)
+    };
+    ["file_path", "path", "filePath"]
+        .iter()
+        .filter_map(|key| input.get(*key))
+        .any(may_be_local)
+        || ["file_paths", "filePaths"]
+            .iter()
+            .filter_map(|key| input.get(*key))
+            .any(|value| {
+                value
+                    .as_array()
+                    .map(|paths| paths.iter().any(may_be_local))
+                    .unwrap_or(true)
+            })
+}
+
+pub fn sha256_text(text: &str) -> String {
     let mut hasher = Sha256::new();
     hasher.update(text.as_bytes());
     hex::encode(hasher.finalize())
@@ -197,12 +228,51 @@ fn allow_inline_output(reason_code: &str, text: &str) -> HookReviewResponseV1 {
     response
 }
 
-fn inline_output_hash(payload: &Value) -> Option<String> {
-    if !has_output_key(payload) {
+fn canonical_hex_digest(value: Option<&Value>) -> Option<String> {
+    let text = value?.as_str()?;
+    if text.len() == 64 && text.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        // Receipt validation canonicalizes digests to lowercase hex.
+        Some(text.to_ascii_lowercase())
+    } else {
+        None
+    }
+}
+
+/// Canonical proof digest for a post-tool payload: a validated
+/// `guard_source_ref.output_sha256`, then `tool_response_summary.output_sha256`,
+/// then a sha256 over complete inline `tool_response` output. Truncated or
+/// excerpt-only output gets no fabricated proof.
+pub fn canonical_observed_output_sha256(payload: &Value) -> Option<String> {
+    let record = payload.as_object()?;
+    if let Some(digest) = canonical_hex_digest(
+        record
+            .get("guard_source_ref")
+            .and_then(|value| value.get("output_sha256")),
+    ) {
+        return Some(digest);
+    }
+    if let Some(digest) = canonical_hex_digest(
+        record
+            .get("tool_response_summary")
+            .and_then(|value| value.get("output_sha256")),
+    ) {
+        return Some(digest);
+    }
+    // Hash the same output surface `review_inline` scans: every supported
+    // output key, not just `tool_response`. A secret in `stdout`/`stderr` must
+    // still yield a proof digest so observe mode can record the decision.
+    let extracted = extract_payload_output(payload);
+    if extracted.truncated || !has_output_key(payload) {
         return None;
     }
-    let extracted = extract_payload_output(payload);
-    if extracted.truncated {
+    // A payload that declares excerpted output only proves the excerpt —
+    // never fabricate a digest for truncated output.
+    if record
+        .get("tool_response_summary")
+        .and_then(|value| value.get("excerpt_truncated"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
         return None;
     }
     Some(sha256_text(&extracted.text))
@@ -309,11 +379,12 @@ fn review_source(
     }
     let allow_external =
         matches!(request.harness.as_str(), "pi" | "omp") && request.source_ref_external_allowed;
-    let candidate_decision = classify_source_path(candidate, cwd, Some(home), allow_external);
+    let candidate_decision =
+        classify_scannable_source_path(candidate, cwd, Some(home), allow_external);
     if !candidate_decision.allowed {
         return inconclusive_source();
     }
-    let target_decision = classify_source_path(&target, cwd, Some(home), allow_external);
+    let target_decision = classify_scannable_source_path(&target, cwd, Some(home), allow_external);
     if !target_decision.allowed {
         return inconclusive_source();
     }
@@ -336,9 +407,7 @@ fn review_source(
     let Ok(text) = std::str::from_utf8(&read.bytes) else {
         return inconclusive_source();
     };
-    if !output_equivalent(text, &source.output_sha256, source.output_chars) {
-        return inconclusive_source();
-    }
+    let raw_output_matches = output_equivalent(text, &source.output_sha256, source.output_chars);
     let scan = scan_text(
         text,
         local_samples_should_be_unsuppressed(&source.path),
@@ -354,6 +423,30 @@ fn review_source(
             "source_secret_match",
             "HOL Guard blocked this output because it contains sensitive content.",
         );
+    }
+    if !raw_output_matches {
+        // A logical skill URI claims this exact installed document, rather
+        // than a host-formatted ordinary file presentation.
+        if source.path.starts_with("skill://") {
+            return inconclusive_source();
+        }
+        // Hosts may add line anchors or headers. Scan the entire presentation
+        // independently, but never promote a partial excerpt to original output.
+        let output = extract_payload_output(&request.payload);
+        let excerpt_truncated = request
+            .payload
+            .get("tool_response_summary")
+            .and_then(|summary| summary.get("excerpt_truncated"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if output.truncated
+            || excerpt_truncated
+            || output.text.chars().count() != source.output_chars as usize
+            || sha256_text(&output.text) != source.output_sha256
+        {
+            return inconclusive_source();
+        }
+        return review_inline(request);
     }
     let mut response = HookReviewResponseV1::allow("source_full_scan_allow");
     response.reviewed_output_sha256 = Some(source.output_sha256.clone());
@@ -374,8 +467,7 @@ fn review_inline(request: &NativeHookRequestV1) -> HookReviewResponseV1 {
             "HOL Guard could not complete local hook review safely.",
         );
     }
-    let local_content = envelope_target(&request.payload)
-        .is_some_and(|path| local_samples_should_be_unsuppressed(&path));
+    let local_content = inline_local_content(&request.payload);
     if extracted.truncated {
         let excerpt: String = extracted
             .text
@@ -436,10 +528,7 @@ pub fn review_post_tool(request: &NativeHookRequestV1) -> HookReviewResponseV1 {
         review_inline(request)
     };
     if request.observe_mode {
-        let output_hash = source
-            .as_ref()
-            .map(|value| value.output_sha256.clone())
-            .or_else(|| inline_output_hash(&request.payload));
+        let output_hash = canonical_observed_output_sha256(&request.payload);
         if let Some(output_hash) = output_hash {
             response.observed(Some(output_hash))
         } else {
@@ -545,5 +634,25 @@ mod tests {
             json!({"stdout": "ok", "stderr": aws_like_access_key()}),
         ));
         assert_eq!(response.reason_code, "output_secret_match");
+    }
+
+    #[test]
+    fn mixed_documentation_and_source_paths_unsuppress_credential() {
+        let response = review_post_tool(&request(json!({
+            "tool_input": {"file_paths": ["docs/security-review.md", "src/config.py"]},
+            "tool_response": [{"type": "text", "text": "credential = 'fixture-only'\n"}]
+        })));
+        assert_eq!(response.decision, "deny");
+        assert_eq!(response.reason_code, "output_secret_match");
+    }
+
+    #[test]
+    fn documentation_only_multi_paths_keep_fixture_suppression() {
+        let response = review_post_tool(&request(json!({
+            "tool_input": {"file_paths": ["docs/security-review.md", "tests/fixture.txt"]},
+            "tool_response": [{"type": "text", "text": "credential = 'fixture-only'\n"}]
+        })));
+        assert_eq!(response.decision, "allow");
+        assert_eq!(response.reason_code, "output_scan_allow");
     }
 }

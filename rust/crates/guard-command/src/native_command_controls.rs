@@ -317,6 +317,24 @@ impl CompiledNativeCommandControls {
                     .count()
                 + usize::from(batch.evaluation_error.is_some()),
         };
+        if result.reason_code == "native_command_review_required"
+            && result.minimum_action == "review"
+            && result.action.bounded
+            && !result.action.sensitive_target
+            && floor == "allow"
+            && binding.uncertainty_count == 0
+            && command.is_some_and(|model| self.explicit_permissions_cover_command(model, &batch))
+        {
+            // Authenticated consent to every classified command segment can
+            // settle the generic unknown-command floor, never an intrinsic risk.
+            result.minimum_action = "allow".into();
+            result.policy_action = "allow".into();
+            result.decision = "allow".into();
+            result.explicitly_benign = true;
+            result.reason_code = "native_command_explicit_permission_allow".into();
+            result.reason =
+                "This command is allowed by its authenticated extension permissions.".into();
+        }
         let evaluation_error = batch.evaluation_error.clone();
         result.command_extensions = Some(NativeCommandObservationsV1 {
             schema: NATIVE_COMMAND_OBSERVATIONS_SCHEMA.to_owned(),
@@ -331,6 +349,40 @@ impl CompiledNativeCommandControls {
         }
         strengthen(&mut result, floor, reason);
         result
+    }
+
+    fn explicit_permissions_cover_command(
+        &self,
+        command: &CanonicalCommandV1,
+        batch: &NativeCommandObservationBatchV1,
+    ) -> bool {
+        if command.confidence != "exact"
+            || command.path_overridden
+            || !command.wrapper_chain.is_empty()
+            || command.segments.is_empty()
+        {
+            return false;
+        }
+        let mut covered = BTreeSet::new();
+        for observation in &batch.observations {
+            if observation.effective_segment_indexes.is_empty() {
+                continue;
+            }
+            let Some(index) = self.rule_indices.get(&observation.rule_id) else {
+                return false;
+            };
+            if !self
+                .explicitly_enabled_permissions
+                .contains(&self.program.rules[*index].permission_id)
+            {
+                return false;
+            }
+            covered.extend(observation.effective_segment_indexes.iter().copied());
+        }
+        // Delegated package-firewall ownership is not execution consent. Only
+        // verified rule observations can cover a segment; an extra unclassified
+        // command in a shell chain must retain its own review.
+        (0..command.segments.len()).all(|index| covered.contains(&index))
     }
 }
 
@@ -391,97 +443,5 @@ fn strengthen(result: &mut PreToolResultV1, action: &str, reason: &str) {
 }
 
 #[cfg(test)]
-mod review_regressions {
-    use super::*;
-
-    #[test]
-    fn delegated_deadline_failure_is_not_an_administrator_disable() {
-        let program = packaged_command_program().unwrap();
-        let mut binding: NativeCommandControlBindingV1 =
-            serde_json::from_value(serde_json::json!({
-                "schema": "guard.native-command-control-binding.v1",
-                "program_digest": program.program_digest,
-                "catalog_digest": program.catalog_digest,
-                "trust_digest": program.trust_digest,
-                "health": "protected", "revision": 1, "managed_revision": 0,
-                "effective_digest": "", "layers": []
-            }))
-            .unwrap();
-        binding.effective_digest = binding.compute_effective_digest().unwrap();
-        let controls = CompiledNativeCommandControls::new(&binding).unwrap();
-        let intrinsic = crate::pretool::evaluate_pre_tool_envelope(
-            "claude-code",
-            "PreToolUse",
-            &serde_json::json!({"tool_name": "mcp__filesystem__read_file", "tool_input": {"path": "fixture.txt"}}),
-        );
-        let result = controls.apply_with_tool(
-            None,
-            intrinsic,
-            Some("mcp__filesystem__read_file"),
-            &[],
-            Some(Instant::now() - std::time::Duration::from_secs(1)),
-        );
-        assert_eq!(result.minimum_action, "block");
-        assert_eq!(result.decision, "deny");
-        let evidence = result.command_extensions.as_ref().unwrap();
-        assert_eq!(
-            evidence.evaluation_error.as_deref(),
-            Some("native_command_evaluation_failed")
-        );
-        assert_eq!(evidence.binding.uncertainty_count, 1);
-        assert_eq!(evidence.binding.observation_count, 0);
-        assert_eq!(
-            result.reason_code,
-            "native_command_extension_evaluation_failed"
-        );
-        assert_eq!(
-            result.reason,
-            "HOL Guard could not evaluate the extension controls for this command. Check Guard diagnostics before retrying."
-        );
-    }
-
-    #[test]
-    fn expired_extension_deadline_fail_closes_a_proven_benign_command() {
-        let program = packaged_command_program().unwrap();
-        let mut binding: NativeCommandControlBindingV1 =
-            serde_json::from_value(serde_json::json!({
-                "schema": "guard.native-command-control-binding.v1",
-                "program_digest": program.program_digest,
-                "catalog_digest": program.catalog_digest,
-                "trust_digest": program.trust_digest,
-                "health": "protected", "revision": 1, "managed_revision": 0,
-                "effective_digest": "", "layers": []
-            }))
-            .unwrap();
-        binding.effective_digest = binding.compute_effective_digest().unwrap();
-        let controls = CompiledNativeCommandControls::new(&binding).unwrap();
-        let intrinsic = crate::pretool::evaluate_pre_tool_envelope(
-            "claude-code",
-            "PreToolUse",
-            &serde_json::json!({"tool_name": "bash", "command": "pwd"}),
-        );
-        let decision = crate::pretool::evaluate_pre_tool(&crate::CommandModelRequestV1 {
-            command: "pwd".to_owned(),
-            dialect: "posix".to_owned(),
-            transport: "shell_string".to_owned(),
-            extraction_provenance: "guard-shell".to_owned(),
-        })
-        .unwrap();
-        let result = controls.apply(
-            &decision.command_model,
-            intrinsic,
-            Some(Instant::now() - std::time::Duration::from_secs(1)),
-        );
-        assert_eq!(result.minimum_action, "block");
-        assert!(!result.explicitly_benign);
-        assert_eq!(result.decision, "deny");
-        assert_eq!(
-            result.reason_code,
-            "native_command_extension_evaluation_failed"
-        );
-        assert_eq!(
-            result.reason,
-            "HOL Guard could not evaluate the extension controls for this command. Check Guard diagnostics before retrying."
-        );
-    }
-}
+#[path = "native_command_controls_tests.rs"]
+mod review_regressions;

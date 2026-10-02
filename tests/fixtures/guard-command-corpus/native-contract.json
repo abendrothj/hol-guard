@@ -688,14 +688,16 @@
       "variant_remainder": 0
     },
     {
-      "basis": "inherited GitHub remote read permission retains contextual review",
+      "basis": "closed GitHub read grammar permits routine native reads; independent contextual oracle remains review",
       "expected": {
         "decision_plane_floor": "review",
         "evaluation_error": null,
         "model_confidence": "exact",
         "model_uncertainty": null,
-        "native_floor": "review",
-        "native_reason": "native_command_review_required",
+        "native_floor": "allow",
+        "native_reason": "native_exact_safe_command",
+        "explicitly_benign": true,
+        "decision": "allow",
         "path_overridden": false,
         "uncertain_rule_ids": []
       },
@@ -710,14 +712,16 @@
       "variant_remainder": 0
     },
     {
-      "basis": "inherited GitHub remote read permission retains contextual review",
+      "basis": "closed GitHub read grammar permits routine native reads; independent contextual oracle remains review",
       "expected": {
         "decision_plane_floor": "review",
         "evaluation_error": null,
         "model_confidence": "exact",
         "model_uncertainty": null,
-        "native_floor": "review",
-        "native_reason": "native_command_review_required",
+        "native_floor": "allow",
+        "native_reason": "native_exact_safe_command",
+        "explicitly_benign": true,
+        "decision": "allow",
         "path_overridden": false,
         "uncertain_rule_ids": []
       },
@@ -1329,9 +1333,9 @@
         "baseline_git_blob": "4cc8d7ccdaa97ad49cb7a4e0bdae6dee04930431",
         "baseline_sha256": "12d74f5afa697c20ecb2af2b9539b1de2a38a812efba6ee13a37446579889255",
         "byte_identical": false,
-        "candidate_git_blob": "4a7ba531300a7d9938f3922a744520a27dadcd28",
-        "candidate_sha256": "7815628c58822adc116167578845b94ccb498a620be32270811248d1d074f91d",
-        "reviewed_change": "Admit only parser-recorded sudo wrappers; other wrapper/context uncertainty is unchanged."
+        "candidate_git_blob": "abb31f97086a2bec60034be58968c4a4cc95a8a8",
+        "candidate_sha256": "af71644220c1325db525ce11098ed0e538dbc035c7a654d6a451601bb0dbfc52",
+        "reviewed_change": "Accept bounded timeout wrapper evidence for inner-command attribution; apply every catalog rule and preserve wrapper review."
       },
       "rust/crates/guard-command/src/command_compatibility/domains.rs": {
         "baseline_git_blob": "9b3e5b7dfa3c418ac4710fdfc143adf6a54f23d8",
@@ -1354,9 +1358,10 @@
       "rust/crates/guard-command/src/command_compatibility/github.rs": {
         "baseline_git_blob": "0f7c32c741bb0fee2ff9fcf98b58246033b4cac9",
         "baseline_sha256": "6794dc442c50c98f991edce4e4539bbf3e2fa5f681e0af4f208a2058e4c85cc4",
-        "byte_identical": true,
-        "candidate_git_blob": "0f7c32c741bb0fee2ff9fcf98b58246033b4cac9",
-        "candidate_sha256": "6794dc442c50c98f991edce4e4539bbf3e2fa5f681e0af4f208a2058e4c85cc4"
+        "byte_identical": false,
+        "candidate_git_blob": "333abbcbec71dce8ebf6c295201210c4f551da14",
+        "candidate_sha256": "7b56f833213c716cc8b0eecc9f90847068013f8df8ce7023278164944fa810a7",
+        "reviewed_change": "Reuse closed GitHub read capabilities for benign admission; reject browser-opening and token-revealing flags and retain local-read and remote-read permission checks for authenticated status."
       },
       "rust/crates/guard-command/src/command_compatibility/github_api.rs": {
         "baseline_git_blob": "905bb6ac282939b95d2842fc136087b4a5cf463f",
@@ -1367,25 +1372,24 @@
       },
       "rust/crates/guard-command/src/command_compatibility/interpreter.rs": {
         "byte_identical": false,
-        "candidate_git_blob": "6a670366ba38be2818005dd820da8252f28043df",
-        "candidate_sha256": "fbef078baff4a8bf861a9f8014170c1001e2a41e5cfc954001e3821dc621590f",
+        "candidate_git_blob": "24a6effdc58bf80a1c6b8c0eef6b53f16aecd4bd",
+        "candidate_sha256": "edd32cb3f61333420ceccb3f99a3881b2e1732342a8b89808aaeff7dcd102f2d",
         "reviewed_change": "Closed interpreter literal/public-environment/Artisan forms avoid invented secret ownership; unmodeled programs retain uncertainty."
       },
       "rust/crates/guard-command/src/command_option_parsing.rs": {
         "baseline_git_blob": "1088dee6717e4beb216a1d62de6d71e5730589f5",
         "baseline_sha256": "a483ff6b493de0270d44a25d4553ebf35f08092b47846f1e262dd72d9bf1c989",
-        "byte_identical": false,
-        "candidate_git_blob": "fe30760b03aa66eb1bf4237b32d4ff6da7e4a041",
-        "candidate_sha256": "9ab4350d6ac6141cac9ebdd67f8f20bd26fe8abad8629f8cce2d5c836de9d8f8",
-        "reviewed_change": "Add bounded ambiguous option-tail parsing for native simgit flag evidence without changing existing option semantics."
+        "byte_identical": true,
+        "candidate_git_blob": "1088dee6717e4beb216a1d62de6d71e5730589f5",
+        "candidate_sha256": "a483ff6b493de0270d44a25d4553ebf35f08092b47846f1e262dd72d9bf1c989"
       },
       "rust/crates/guard-command/src/lib.rs": {
         "baseline_git_blob": "96c8675f0b7b86e7463867ec5ac65fded42d1b09",
         "baseline_sha256": "67fd0552f32a3fe7c87bd9e2aa408a02a5f77ca22fdf9c5608f748db29ee965c",
         "byte_identical": false,
-        "candidate_git_blob": "04379836dd03e0d6692c9ce844919d5420768c95",
-        "candidate_sha256": "a4d25857584ec05cab4bf77df105be54d2491de12e8fea32ad03340237d4744c",
-        "reviewed_change": "Bound sudo extraction and decoder-to-shell pipelines; distinguish literal argument braces from unsupported parameter expansion and shell groups; reject active fd subprocess modes until nested execution proof is modeled. Normalize bounded simgit wrapper commands, safe literal substitutions, and argument-vector shell parameters while retaining uncertainty for unsupported execution forms.",
+        "candidate_git_blob": "2676ee40d160fc2f3b0b937e2d9be95d66267fbe",
+        "candidate_sha256": "e181ae2b767f3d95fa4ddc76b9c57e148546f24bd1c965dec9cc37f3d7992cc0",
+        "reviewed_change": "Bound sudo extraction and decoder-to-shell pipelines; distinguish literal argument braces from unsupported parameter expansion and shell groups; reject active fd subprocess modes until nested execution proof is modeled.",
         "upstream_change": "bounded-stderr-redirect-and-exact-cd-find-py-compile-support",
         "upstream_change_commit": "5a076ded9182f4466b875effffae3b156fba9e04",
         "upstream_style_change": "map_or-true-to-is_none_or-preserves-parser-predicate",
@@ -1393,9 +1397,9 @@
       },
       "rust/crates/guard-command/src/parser_wrappers.rs": {
         "byte_identical": false,
-        "candidate_git_blob": "82926392cccc4da87cfdb80b8aa420da5c0b7523",
-        "candidate_sha256": "f6fe04dab35eb9743baaa1a963863a872f60dded78db54a844912f801e24dfe4",
-        "reviewed_change": "Bound sudo options and encoded stdin shell forms preserve raw source and wrapper evidence; unknown execution modes remain uncertain. Parse bounded exec, xargs, env, command and literal shell wrappers; reject dynamic executables and unsupported modes."
+        "candidate_git_blob": "4cc84046b5252b23adddfbe2ecb5b8f6b43910da",
+        "candidate_sha256": "2ffe9d2f322995d621bfea2b4b61ceb8a742c6b61000487de0acfe1b90761a48",
+        "reviewed_change": "Bound sudo and integer-duration timeout extraction; retain raw source and wrapper evidence, reject unsupported options, nesting and execution modes."
       }
     }
   },

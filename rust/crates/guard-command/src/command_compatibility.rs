@@ -20,6 +20,10 @@ mod github;
 
 pub use catalog::compatibility_rule_ids;
 
+pub(crate) fn github_arguments_are_read_only(arguments: &[String]) -> bool {
+    github::arguments_are_read_only(arguments)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompatibilityMatch {
     pub rule_id: &'static str,
@@ -97,6 +101,20 @@ impl CompatibilityObservations {
     }
 }
 
+/// Whether the canonical model is exact enough for structured observation.
+/// Commands the parser cannot represent have no attributable segment evidence;
+/// their intrinsic floor stays authoritative instead of an observation error.
+pub(crate) fn compatibility_model_supported(command: &CanonicalCommandV1) -> bool {
+    command.confidence == "exact"
+        && command.uncertainty_reason.is_none()
+        && !command.segments.is_empty()
+        && !command.path_overridden
+        && command
+            .wrapper_chain
+            .iter()
+            .all(|wrapper| matches!(wrapper.as_str(), "sudo" | "timeout"))
+}
+
 fn deadline_check(deadline: Option<Instant>) -> Result<(), &'static str> {
     if deadline.is_some_and(|limit| Instant::now() >= limit) {
         Err("native_command_compatibility_deadline")
@@ -160,15 +178,7 @@ pub fn compatibility_observations(
     {
         return Err("native_command_compatibility_limit");
     }
-    if command.confidence != "exact"
-        || command.uncertainty_reason.is_some()
-        || command.segments.is_empty()
-        || command.path_overridden
-        || command
-            .wrapper_chain
-            .iter()
-            .any(|wrapper| wrapper != "sudo")
-    {
+    if !compatibility_model_supported(command) {
         return Err("native_command_compatibility_model_unsupported");
     }
     let mut result = CompatibilityObservations::default();
@@ -179,7 +189,7 @@ pub fn compatibility_observations(
             || segment
                 .wrapper_chain
                 .iter()
-                .any(|wrapper| wrapper != "sudo")
+                .any(|wrapper| !matches!(wrapper.as_str(), "sudo" | "timeout"))
             || !segment.environment_names.is_empty()
             || segment.text.contains('\0')
             || segment.arguments.iter().any(|value| value.contains('\0'))

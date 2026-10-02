@@ -105,7 +105,7 @@ fn canonical_digest<T: Serialize>(value: &T, maximum: usize, code: &str) -> Resu
     Ok(digest_bytes(&bytes))
 }
 
-fn binding_digest(label: &str, values: &[&str]) -> Result<String, String> {
+pub(super) fn binding_digest(label: &str, values: &[&str]) -> Result<String, String> {
     let mut normalized = values
         .iter()
         .map(|value| value.trim())
@@ -258,7 +258,7 @@ pub(super) fn derive_context_with_snapshot(
         .map_err(|_| "native_approval_result_invalid".to_owned())?;
     crate::policy_enforcement::validate_pre_tool_result_matrix(&result)
         .map_err(|_| "native_approval_action_reconstruction_failed".to_owned())?;
-    let intrinsic = guard_command::pretool::evaluate_pre_tool_envelope_with_source(
+    let intrinsic = guard_command::pretool::evaluate_pre_tool_envelope_with_context(
         &edge_result.harness,
         &edge_result.event_name,
         &envelope.raw_payload,
