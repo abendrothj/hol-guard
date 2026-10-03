@@ -26,8 +26,14 @@ fn explicit_github_read_permission_deny_still_wins() {
         for command in [
             "gh api repos/owner/repo/compare/base...main",
             "gh auth status",
+            "pwd; gh auth status; echo done",
+            "gh auth status | head -1",
         ] {
-            if permission == "read-local" && command != "gh auth status" {
+            let exercises_local_permission = matches!(
+                command,
+                "gh auth status" | "pwd; gh auth status; echo done" | "gh auth status | head -1"
+            );
+            if permission == "read-local" && !exercises_local_permission {
                 continue;
             }
             let result = evaluate_pre_tool_envelope_with_context(
@@ -53,9 +59,20 @@ fn github_read_capabilities_have_a_benign_floor_but_mutations_do_not() {
             ("gh api -X GET repos/owner/repo/pulls/1", true),
             ("gh api --method=HEAD repos/owner/repo/commits/main", true),
             ("gh pr view 1 --json title,state", true),
+            ("gh pr checks 4295 --repo hol-fake/example", true),
+            ("gh pr view 4295 --repo hol-fake/example --json number,state,mergeable", true),
+            ("gh -Rowner/repo pr view 17", false),
+            ("gh -Rgithub.com/Owner/Repo pr view 17", false),
             ("gh pr diff 1", true),
             ("gh run view 1 --json status", true),
             ("gh auth status", true),
+            ("pwd; gh pr view 1 --json title; echo done", true),
+            ("git status --short && gh api repos/owner/repo/compare/base...main", true),
+            ("gh pr view 1 --json title || echo unavailable", true),
+            ("gh api repos/owner/repo/compare/base...main | head -1", true),
+            ("gh pr view 1 --json title; cat .env", false),
+            ("gh pr view 1 --json title && rm -rf src", false),
+            ("gh pr view 1 --json title || python3 unknown.py", false),
             ("gh auth token", false),
             ("gh auth status --show-token", false),
             ("gh auth status -at", false),

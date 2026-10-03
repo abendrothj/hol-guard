@@ -161,6 +161,29 @@ pub(super) fn bounded_read_target(
     safe_read_target(path)
 }
 
+pub(super) fn verified_path_context(home_dir: Option<&str>, cwd: Option<&str>) -> bool {
+    let (Some(home_dir), Some(cwd)) = (home_dir, cwd) else {
+        return false;
+    };
+    context_root_is_absolute(home_dir, Some(home_dir))
+        && context_root_is_absolute(cwd, Some(home_dir))
+}
+
+fn context_root_is_absolute(root: &str, home_dir: Option<&str>) -> bool {
+    if root.is_empty() || root.trim() != root {
+        return false;
+    }
+    let expanded = if std::path::Path::new(root).is_absolute() {
+        Some(root.to_owned())
+    } else {
+        expand_home_read_path(root, home_dir)
+    };
+    expanded.is_some_and(|root| {
+        let path = std::path::Path::new(&root);
+        path.is_absolute() && std::fs::canonicalize(path).is_ok_and(|canonical| canonical.is_dir())
+    })
+}
+
 /// Location outside the workspace is not itself a risk. The resolved regular
 /// file must still clear every sensitive-path screen.
 fn resolved_path_allowed(
@@ -646,6 +669,19 @@ pub(super) fn safe_head_tail_arguments(
     piped_input: bool,
     context: (Option<&str>, Option<&str>),
 ) -> bool {
+    safe_head_tail_with_targets(arguments, piped_input, context, true)
+}
+
+pub(super) fn safe_head_tail_stdin_arguments(arguments: &[String]) -> bool {
+    safe_head_tail_with_targets(arguments, true, (None, None), false)
+}
+
+fn safe_head_tail_with_targets(
+    arguments: &[String],
+    piped_input: bool,
+    context: (Option<&str>, Option<&str>),
+    allow_target: bool,
+) -> bool {
     let mut saw_target = false;
     let mut expect_count = false;
     let mut after_options = false;
@@ -661,7 +697,11 @@ pub(super) fn safe_head_tail_arguments(
             continue;
         }
         if after_options {
-            if argument == "-" || !command_read_target(argument, context, false) || saw_target {
+            if !allow_target
+                || argument == "-"
+                || !command_read_target(argument, context, false)
+                || saw_target
+            {
                 return false;
             }
             saw_target = true;
@@ -697,7 +737,7 @@ pub(super) fn safe_head_tail_arguments(
         if argument.starts_with('-') {
             return false;
         }
-        if !command_read_target(argument, context, false) {
+        if !allow_target || !command_read_target(argument, context, false) {
             return false;
         }
         if saw_target {

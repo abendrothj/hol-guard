@@ -455,6 +455,10 @@ def main() -> None:
     GUARD_HOME.mkdir(parents=True, exist_ok=True)
     _prepare_workspace()
     store = GuardStore(GUARD_HOME, prime_policy_integrity=False)
+    from codex_plugin_scanner.guard.config import update_guard_settings
+
+    if not (GUARD_HOME / "config.toml").exists():
+        update_guard_settings(GUARD_HOME, {"blocked_request_mode": "ask"})
     daemon = GuardDaemonServer(
         store,
         host="127.0.0.1",
