@@ -53,7 +53,7 @@ pub fn run_fixtures(bytes: &[u8]) -> Result<Value, &'static str> {
             || !ids.insert(case.id.clone())
             || !matches!(
                 case.expected_action.as_str(),
-                "allow" | "review" | "block" | "require-reapproval"
+                "allow" | "review" | "require-reapproval" | "block"
             )
             || !program
                 .rules

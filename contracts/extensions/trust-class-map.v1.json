@@ -78,14 +78,17 @@
       "command.storage.minio"
     ],
     "external": [
+      "command.appimg",
       "command.blitcp",
       "command.cloudg",
       "command.cogext",
+      "command.cs",
       "command.ctty",
       "command.digline",
       "command.errand",
       "command.genclave",
       "command.gitsync",
+      "command.mcp-contribos",
       "command.mcp-filesystem",
       "command.mcp-instapods",
       "command.mcp-pr-ui-compare",
@@ -98,9 +101,11 @@
       "command.simgit",
       "command.skill-base",
       "command.skill-sunset",
+      "command.snoboard",
       "command.syngraphe",
       "command.tui-runner",
-      "command.uivoid"
+      "command.uivoid",
+      "command.vttforge"
     ]
   }
 }

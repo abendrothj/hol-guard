@@ -64,6 +64,7 @@ fn model(segments: &[(Option<String>, Vec<String>)], raw: Option<&str>) -> Canon
         uncertainty_reason: None,
         path_overridden: false,
         parser_profile: "remaining-matchers-oracle".to_owned(),
+        security_identity: String::new(),
     }
 }
 fn shell(source: &str) -> CanonicalCommandV1 {
@@ -436,11 +437,21 @@ fn tui_runner_expansion_matches_wrapper_executable_name_variants_by_position() {
     for (executable, arguments, expected) in [
         ("exec", vec!["tui-runner.exe", "$RECONFIG_FLAG"], vec![0]),
         ("exec", vec!["tui-runner.cmd", "$RECONFIG_FLAG"], vec![0]),
-        ("xargs", vec!["-n", "1", "tui-runner.exe", "$RECONFIG_FLAG"], vec![0]),
+        (
+            "xargs",
+            vec!["-n", "1", "tui-runner.exe", "$RECONFIG_FLAG"],
+            vec![0],
+        ),
         ("exec", vec!["tui-runner", "--reconfigure"], vec![]),
         ("exec", vec!["tui-runner.exe", "--reconfigure"], vec![]),
     ] {
-        let command = model(&[(Some(executable.to_owned()), arguments.iter().map(|v| (*v).to_owned()).collect())], None);
+        let command = model(
+            &[(
+                Some(executable.to_owned()),
+                arguments.iter().map(|v| (*v).to_owned()).collect(),
+            )],
+            None,
+        );
         assert_eq!(
             matcher.match_segments(&command),
             Ok(expected),

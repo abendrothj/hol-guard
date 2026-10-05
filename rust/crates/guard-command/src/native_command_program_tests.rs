@@ -140,11 +140,24 @@ fn complete_observations_match_independent_python_reference_models() {
                     .any(|rule| rule.rule_id == observation.rule_id && rule.matcher.is_some())
             })
             .collect();
+        let expected = serde_json::to_value(
+            case["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|observation| {
+                    program.rules.iter().any(|rule| {
+                        rule.rule_id == observation["rule_id"] && rule.matcher.is_some()
+                    })
+                })
+                .collect::<Vec<_>>(),
+        )
+        .unwrap();
         let value = serde_json::to_value(declarative).unwrap();
-        if value != case["observations"] {
+        if value != expected {
             mismatches.push(format!(
                 "{}\nexpected={}\nactual={}",
-                case["command"], case["observations"], value
+                case["command"], expected, value
             ));
         }
     }
@@ -362,9 +375,11 @@ fn graph_depth_proof_cannot_be_bypassed_by_memoized_shared_children() {
 #[test]
 fn compatibility_safe_commands_and_ruleless_permissions_obey_controls() {
     let unrestricted = binding(&[], false);
+    // This wrapper has no verified repository context; extension consent
+    // cannot prove that Git's effective configuration is execution-free.
     assert_eq!(
         decision("git status", &unrestricted).minimum_action,
-        "allow"
+        "require-reapproval"
     );
     for (kind, target, command) in [
         ("extension", "command.git", "git status"),

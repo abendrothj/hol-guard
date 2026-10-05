@@ -197,6 +197,7 @@ impl SpecializedMatcher {
                     })
                     .collect();
                 Ok(Self::TuiRunnerExpansion(config))
+            }
             "simgit-flag.v1" => {
                 let config: SimgitFlagConfig = serde_json::from_value(config).map_err(invalid)?;
                 Ok(Self::SimgitFlag(config.validate()?))
@@ -427,7 +428,11 @@ fn expansion_markers() -> BTreeSet<String> {
     string_set(&["$", "`"])
 }
 fn executable_name_variants(name: &str) -> BTreeSet<String> {
-    BTreeSet::from([name.to_owned(), format!("{name}.cmd"), format!("{name}.exe")])
+    BTreeSet::from([
+        name.to_owned(),
+        format!("{name}.cmd"),
+        format!("{name}.exe"),
+    ])
 }
 fn tui_runner_launchers() -> Vec<Vec<String>> {
     [

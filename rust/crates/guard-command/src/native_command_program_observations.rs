@@ -9,11 +9,28 @@ impl NativeCommandProgram {
         active_extensions: &BTreeSet<String>,
         deadline: Option<Instant>,
     ) -> Result<NativeCommandObservationBatchV1, &'static str> {
+        self.observe_with_context(
+            command,
+            active_extensions,
+            deadline,
+            crate::pretool::PathContext::default(),
+        )
+    }
+
+    pub fn observe_with_context(
+        &self,
+        command: &CanonicalCommandV1,
+        active_extensions: &BTreeSet<String>,
+        deadline: Option<Instant>,
+        context: crate::pretool::PathContext<'_>,
+    ) -> Result<NativeCommandObservationBatchV1, &'static str> {
         // The legacy compatibility matcher cannot interpret non-sudo wrappers.
         // Keep its fail-closed behavior for other commands, but do not discard
         // native evidence for a single, explicitly identified simgit invocation.
         let compatibility =
-            match crate::command_compatibility::compatibility_observations(command, deadline) {
+            match crate::command_compatibility::compatibility_observations_with_context(
+                command, deadline, context,
+            ) {
                 Err("native_command_compatibility_model_unsupported")
                 | Err("native_command_compatibility_context_unsupported")
                     if command.confidence == "exact"
