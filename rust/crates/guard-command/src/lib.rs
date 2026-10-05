@@ -291,8 +291,12 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
             Vec::new()
         };
         // Native wrapper extraction is currently needed for simgit only.
-        // Other tools keep their original uncertain model and host floor.
-        if let Some(wrapper) = wrapper_chain.iter().find(|wrapper| *wrapper != "sudo") {
+        // Other tools keep their original uncertain model and host floor;
+        // `unwrap_sudo` already admits sudo and timeout for every executable.
+        if let Some(wrapper) = wrapper_chain
+            .iter()
+            .find(|wrapper| !matches!(wrapper.as_str(), "sudo" | "timeout"))
+        {
             if !executable.as_deref().is_some_and(is_simgit_executable) {
                 let reason = if matches!(wrapper.as_str(), "exec" | "xargs") {
                     "nested_command_executor_not_yet_supported"
