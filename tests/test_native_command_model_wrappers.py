@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 
 from codex_plugin_scanner.guard.native_command_model import _canonical_command_from_native
+from tests.native_command_test_support import real_native_review_fixture
 
 
 def _model() -> tuple[str, dict]:
@@ -46,6 +47,24 @@ def test_request_bound_wrapper_provenance_survives_conversion() -> None:
     assert canonical.segments[0].tokens == tuple(command.split())
     assert canonical.segments[0].executable == "git"
     assert canonical.segments[0].arguments[-1] == "--force"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "exec simgit gc --discard-dirty",
+        "xargs -I {} sg gc --delete-unmerged {}",
+        "env -i PATH=/custom command -p sg remove --discard-dirty tree",
+        "bash -c 'exec simgit gc $FLAGS'",
+    ],
+)
+def test_native_simgit_wrapper_model_survives_python_bridge(command: str) -> None:
+    native = real_native_review_fixture(command).payload["command_model"]
+    canonical = _canonical_command_from_native(command, native)
+    assert canonical is not None
+    assert canonical.confidence == "exact"
+    assert canonical.segments[0].executable in {"simgit", "sg"}
+    assert canonical.wrapper_chain
 
 
 @pytest.mark.parametrize(

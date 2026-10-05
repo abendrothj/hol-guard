@@ -162,22 +162,61 @@ fn subcommand_parse_outcome(
     state_limit: usize,
     deadline: Option<Instant>,
 ) -> ParseOutcome {
+    match subcommand_parse_tails(
+        arguments,
+        subcommands,
+        options_with_values,
+        known_flags,
+        state_limit,
+        deadline,
+    ) {
+        Some(tails) if tails.is_empty() => ParseOutcome::NoMatch,
+        Some(_) => ParseOutcome::Match,
+        None => ParseOutcome::Uncertain,
+    }
+}
+
+pub(crate) fn subcommand_parse_tails_with_deadline(
+    arguments: &[String],
+    subcommands: &[String],
+    options_with_values: &BTreeSet<String>,
+    known_flags: &BTreeSet<String>,
+    deadline: Option<Instant>,
+) -> Option<Vec<usize>> {
+    subcommand_parse_tails(
+        arguments,
+        subcommands,
+        options_with_values,
+        known_flags,
+        MAX_OPTION_PARSE_STATES,
+        deadline,
+    )
+}
+
+fn subcommand_parse_tails(
+    arguments: &[String],
+    subcommands: &[String],
+    options_with_values: &BTreeSet<String>,
+    known_flags: &BTreeSet<String>,
+    state_limit: usize,
+    deadline: Option<Instant>,
+) -> Option<Vec<usize>> {
+    let mut tails = BTreeSet::new();
     let mut pending = vec![(0, 0)];
     let mut visited = BTreeSet::new();
     while let Some(state) = pending.pop() {
-        if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-            return ParseOutcome::Uncertain;
+        if deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            || visited.len() >= state_limit
+        {
+            return None;
         }
-        if visited.contains(&state) {
+        if !visited.insert(state) {
             continue;
         }
-        if visited.len() >= state_limit {
-            return ParseOutcome::Uncertain;
-        }
-        visited.insert(state);
         let (argument_index, subcommand_index) = state;
         if subcommand_index == subcommands.len() {
-            return ParseOutcome::Match;
+            tails.insert(argument_index);
+            continue;
         }
         let Some(argument) = arguments.get(argument_index) else {
             continue;
@@ -185,7 +224,7 @@ fn subcommand_parse_outcome(
         if argument == "--" {
             let remaining = &subcommands[subcommand_index..];
             if arguments[argument_index + 1..].starts_with(remaining) {
-                return ParseOutcome::Match;
+                tails.insert(argument_index + 1 + remaining.len());
             }
         } else if is_option(argument) {
             let shape = option_shape(argument, options_with_values, known_flags);
@@ -199,7 +238,7 @@ fn subcommand_parse_outcome(
             pending.push((argument_index + 1, subcommand_index + 1));
         }
     }
-    ParseOutcome::NoMatch
+    Some(tails.into_iter().collect())
 }
 
 fn flag_parse_outcome(

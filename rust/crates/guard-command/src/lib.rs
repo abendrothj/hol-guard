@@ -137,25 +137,88 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
         }
 
         let mut environment_names = Vec::new();
+        let mut effective_tokens = None;
         let mut executable_index = 0usize;
-        while executable_index < tokens.len() {
-            let Some(name) = assignment_name(&tokens[executable_index]) else {
-                break;
-            };
-            environment_names.push(name.to_owned());
-            executable_index += 1;
-        }
-        let (executable_index, wrapper_chain) =
-            match parser_wrappers::unwrap_sudo(&tokens, executable_index) {
+        let mut wrapper_chain = Vec::new();
+        let mut nested_text = None;
+        loop {
+            let current_tokens = effective_tokens.as_ref().unwrap_or(&tokens);
+            while executable_index < current_tokens.len() {
+                let Some(name) = assignment_name(&current_tokens[executable_index]) else {
+                    break;
+                };
+                environment_names.push(name.to_owned());
+                executable_index += 1;
+            }
+            let (next, sudo) = match parser_wrappers::unwrap_sudo(current_tokens, executable_index)
+            {
                 Ok(value) => value,
                 Err(reason) => return Ok(uncertain(request, raw, reason)),
             };
-        let executable = tokens.get(executable_index).cloned();
+            executable_index = next;
+            wrapper_chain.extend(sudo);
+            if wrapper_chain.len() > 4 {
+                return Ok(uncertain(request, raw, "command_wrapper_limit_exceeded"));
+            }
+            let step = match parser_wrappers::unwrap_supported(current_tokens, executable_index) {
+                Ok(Some(value)) => value,
+                Ok(None) => break,
+                Err(reason) => return Ok(uncertain(request, raw, reason)),
+            };
+            wrapper_chain.push(step.name.to_owned());
+            if wrapper_chain.len() > 4 {
+                return Ok(uncertain(request, raw, "command_wrapper_limit_exceeded"));
+            }
+            environment_names.extend(step.environment_names);
+            executable_index = step.next_index;
+            if let Some(script) = step.script {
+                let nested_segments =
+                    match split_execution_segments(&script, preserve_unquoted_backslash) {
+                        Ok(segments) if segments.len() == 1 => segments,
+                        _ => {
+                            return Ok(uncertain(
+                                request,
+                                raw,
+                                "nested_shell_script_not_yet_supported",
+                            ))
+                        }
+                    };
+                let chars: Vec<char> = script.chars().collect();
+                let nested = &nested_segments[0];
+                let effective_text: String = chars[nested.start..nested.end].iter().collect();
+                let nested_tokens = match shell_tokens(&effective_text, preserve_unquoted_backslash)
+                {
+                    Ok(value) => value,
+                    Err(reason) => return Ok(uncertain(request, raw, reason)),
+                };
+                total_tokens = total_tokens.saturating_add(nested_tokens.len());
+                if total_tokens > MAX_COMMAND_TOKENS {
+                    return Ok(uncertain(request, raw, "command_token_limit_exceeded"));
+                }
+                effective_tokens = Some(nested_tokens);
+                nested_text = Some(effective_text);
+                executable_index = 0;
+            }
+        }
+        let effective = effective_tokens.as_ref().unwrap_or(&tokens);
+        let executable = effective.get(executable_index).cloned();
         let arguments = if executable.is_some() {
-            tokens[executable_index + 1..].to_vec()
+            effective[executable_index + 1..].to_vec()
         } else {
             Vec::new()
         };
+        // Native wrapper extraction is currently needed for simgit only.
+        // Other tools keep their original uncertain model and host floor.
+        if let Some(wrapper) = wrapper_chain.iter().find(|wrapper| *wrapper != "sudo") {
+            if !executable.as_deref().is_some_and(is_simgit_executable) {
+                let reason = if matches!(wrapper.as_str(), "exec" | "xargs") {
+                    "nested_command_executor_not_yet_supported"
+                } else {
+                    "transparent_wrapper_not_yet_supported"
+                };
+                return Ok(uncertain(request, raw, reason));
+            }
+        }
         if executable.as_deref().is_some_and(is_shell_control_keyword) {
             return Ok(uncertain(request, raw, "compound_shell_not_yet_supported"));
         }
@@ -183,9 +246,16 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
                 "nested_command_executor_not_yet_supported",
             ));
         }
+        // Opaque substitutions can execute or supply arguments. Keep them
+        // visible for the bounded simgit flag matcher, never as generic words.
+        if let Some(reason) = active_expansion_reason(nested_text.as_deref().unwrap_or(&text)) {
+            if !executable.as_deref().is_some_and(is_simgit_executable) {
+                return Ok(uncertain(request, raw, reason));
+            }
+        }
         let path_overridden = environment_names.iter().any(|name| name == "PATH");
         segments.push(CommandSegmentV1 {
-            text,
+            text: nested_text.unwrap_or(text),
             tokens,
             executable,
             arguments,
@@ -227,6 +297,17 @@ pub fn parse_command(request: &CommandModelRequestV1) -> Result<CanonicalCommand
     })
 }
 
+fn is_simgit_executable(value: &str) -> bool {
+    let basename = executable_basename(value);
+    matches!(
+        basename
+            .strip_suffix(".exe")
+            .or_else(|| basename.strip_suffix(".cmd"))
+            .unwrap_or(basename),
+        "simgit" | "sg"
+    )
+}
+
 fn uncertain(request: &CommandModelRequestV1, raw: &str, reason: &str) -> CanonicalCommandV1 {
     CanonicalCommandV1 {
         exact_raw_text: false,
@@ -241,6 +322,163 @@ fn uncertain(request: &CommandModelRequestV1, raw: &str, reason: &str) -> Canoni
         path_overridden: false,
         parser_profile: "posix-simple-v1".to_owned(),
     }
+}
+
+fn active_expansion_reason(text: &str) -> Option<&'static str> {
+    let mut quote = Quote::None;
+    let mut escaped = false;
+    let mut chars = text.chars();
+    while let Some(current) = chars.next() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if current == '\\' && quote != Quote::Single {
+            escaped = true;
+            continue;
+        }
+        match quote {
+            Quote::Single => {
+                if current == '\'' {
+                    quote = Quote::None;
+                }
+            }
+            Quote::Double | Quote::None => {
+                if current == '`' || (current == '$' && chars.clone().next() == Some('(')) {
+                    return Some("command_substitution_not_yet_supported");
+                }
+                if current == '$' && chars.clone().next() == Some('{') {
+                    return Some("parameter_expansion_not_yet_supported");
+                }
+                if current == '"' {
+                    quote = if quote == Quote::Double {
+                        Quote::None
+                    } else {
+                        Quote::Double
+                    };
+                } else if current == '\'' && quote == Quote::None {
+                    quote = Quote::Single;
+                }
+            }
+        }
+    }
+    None
+}
+
+// Keep only inspected, non-executing producers opaque; any other nested
+// command must remain uncertain rather than silently disappearing.
+fn safe_substitution(chars: &[char], start: usize, end: usize, backtick: bool) -> bool {
+    let begin = start + if backtick { 1 } else { 2 };
+    let inner: String = chars[begin..end].iter().collect();
+    if inner.contains('$') || inner.contains('`') {
+        return false;
+    }
+    let Ok(segments) = split_execution_segments(&inner, false) else {
+        return false;
+    };
+    if segments.len() != 1 {
+        return false;
+    }
+    let Ok(tokens) = shell_tokens(&inner, false) else {
+        return false;
+    };
+    match tokens.first().map(String::as_str) {
+        Some("printf") => tokens.len() >= 3 && tokens[1] == "--",
+        Some("cat") => tokens.len() == 2 && tokens[1].starts_with('/'),
+        Some("git") => tokens == ["git", "branch", "--show-current"],
+        _ => false,
+    }
+}
+
+// Return the closing delimiter without evaluating its contents. The caller
+// treats the entire inspected substitution as one opaque word fragment.
+fn substitution_end(chars: &[char], start: usize) -> Result<usize, &'static str> {
+    let backtick = chars[start] == '`';
+    let mut depth = 1usize;
+    let mut quote = Quote::None;
+    let mut escaped = false;
+    let mut index = start + if backtick { 1 } else { 2 };
+    while index < chars.len() {
+        let current = chars[index];
+        if escaped {
+            escaped = false;
+            index += 1;
+            continue;
+        }
+        if current == '\\' && quote != Quote::Single {
+            escaped = true;
+            index += 1;
+            continue;
+        }
+        match quote {
+            Quote::Single => {
+                if current == '\'' {
+                    quote = Quote::None;
+                }
+            }
+            Quote::Double if current == '"' => quote = Quote::None,
+            Quote::Double | Quote::None => {
+                if current == '"' {
+                    quote = Quote::Double;
+                } else if current == '\'' && quote == Quote::None {
+                    quote = Quote::Single;
+                } else if current == '`' {
+                    if backtick && depth == 1 && safe_substitution(chars, start, index, true) {
+                        return Ok(index);
+                    }
+                    return Err("command_substitution_not_yet_supported");
+                } else if current == '$' && chars.get(index + 1) == Some(&'(') {
+                    if backtick {
+                        return Err("command_substitution_not_yet_supported");
+                    }
+                    depth += 1;
+                    index += 1;
+                } else if !backtick && current == ')' {
+                    depth -= 1;
+                    if depth == 0 {
+                        return if safe_substitution(chars, start, index, false) {
+                            Ok(index)
+                        } else {
+                            Err("command_substitution_not_yet_supported")
+                        };
+                    }
+                }
+            }
+        }
+        index += 1;
+    }
+    Err("malformed_shell_quoting")
+}
+
+fn parameter_end(chars: &[char], start: usize) -> Result<usize, &'static str> {
+    let mut index = start + 2;
+    if chars.get(index) == Some(&'@') || chars.get(index) == Some(&'*') {
+        index += 1;
+    } else {
+        if !chars
+            .get(index)
+            .is_some_and(|value| *value == '_' || value.is_ascii_alphabetic())
+        {
+            return Err("parameter_expansion_not_yet_supported");
+        }
+        while chars
+            .get(index)
+            .is_some_and(|value| *value == '_' || value.is_ascii_alphanumeric())
+        {
+            index += 1;
+        }
+        if chars.get(index) == Some(&'[') {
+            index += 1;
+            if !matches!(chars.get(index), Some('@' | '*')) || chars.get(index + 1) != Some(&']') {
+                return Err("parameter_expansion_not_yet_supported");
+            }
+            index += 2;
+        }
+    }
+    if chars.get(index) != Some(&'}') {
+        return Err("parameter_expansion_not_yet_supported");
+    }
+    Ok(index)
 }
 
 fn split_execution_segments(
@@ -277,7 +515,9 @@ fn split_execution_segments(
                 } else if current == '\\' {
                     escaped = true;
                 } else if current == '`' || (current == '$' && chars.get(index + 1) == Some(&'(')) {
-                    return Err("command_substitution_not_yet_supported");
+                    index = substitution_end(&chars, index)?;
+                } else if current == '$' && chars.get(index + 1) == Some(&'{') {
+                    index = parameter_end(&chars, index)?;
                 }
                 index += 1;
                 continue;
@@ -290,18 +530,24 @@ fn split_execution_segments(
             '"' => quote = Quote::Double,
             '\\' if preserve_unquoted_backslash => {}
             '\\' => escaped = true,
-            '`' => return Err("command_substitution_not_yet_supported"),
+            '`' => index = substitution_end(&chars, index)?,
             '$' if chars.get(index + 1) == Some(&'(') => {
-                return Err("command_substitution_not_yet_supported");
+                index = substitution_end(&chars, index)?;
             }
             '$' if chars.get(index + 1) == Some(&'{') => {
-                return Err("parameter_expansion_not_yet_supported");
+                index = parameter_end(&chars, index)?;
             }
             '$' if chars
                 .get(index + 1)
                 .is_some_and(|next| *next == '\'' || *next == '"') =>
             {
                 return Err("non_posix_quoting_not_yet_supported");
+            }
+            '#' if index == 0
+                || is_shell_token_whitespace(chars[index - 1])
+                || matches!(chars[index - 1], ';' | '|' | '&') =>
+            {
+                return Err("shell_comment_not_yet_supported");
             }
             '<' | '>' if is_stderr_to_stdout_redirect(&chars, index) => {}
             '<' | '>' => return Err("command_redirect_not_yet_supported"),
@@ -507,7 +753,21 @@ fn shell_tokens(command: &str, preserve_backslash: bool) -> Result<Vec<String>, 
     let mut quote = Quote::None;
     let mut escaped = false;
 
-    for current in command.chars() {
+    let chars: Vec<char> = command.chars().collect();
+    let mut index = 0usize;
+    while index < chars.len() {
+        let current = chars[index];
+        if !escaped
+            && quote != Quote::Single
+            && (current == '`' || (current == '$' && chars.get(index + 1) == Some(&'(')))
+        {
+            let end = substitution_end(&chars, index)?;
+            token.extend(chars[index..=end].iter());
+            token_started = true;
+            index = end + 1;
+            continue;
+        }
+        index += 1;
         if escaped {
             if quote == Quote::Double && current != '"' && current != '\\' {
                 token.push('\\');
@@ -868,12 +1128,12 @@ mod tests {
             "echo hello > out.txt",
             "sleep 1 &",
             "sudo -s rm -rf /tmp/example",
-            "sh -c 'rm -rf /tmp/example'",
+            "sh -c 'rm -rf /tmp/example; echo done'",
             "eval 'rm -rf /tmp/example'",
             "if true; then echo yes; fi",
             "[[ -f Cargo.toml ]]",
             "echo $'non-posix quote'",
-            "xargs rm -rf",
+            "xargs -P 8 rm -rf",
             "find . -exec rm {} ;",
         ] {
             let parsed = parse_command(&request(command)).unwrap();

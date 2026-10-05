@@ -9,8 +9,35 @@ impl NativeCommandProgram {
         active_extensions: &BTreeSet<String>,
         deadline: Option<Instant>,
     ) -> Result<NativeCommandObservationBatchV1, &'static str> {
+        // The legacy compatibility matcher cannot interpret non-sudo wrappers.
+        // Keep its fail-closed behavior for other commands, but do not discard
+        // native evidence for a single, explicitly identified simgit invocation.
         let compatibility =
-            crate::command_compatibility::compatibility_observations(command, deadline)?;
+            match crate::command_compatibility::compatibility_observations(command, deadline) {
+                Err("native_command_compatibility_model_unsupported")
+                | Err("native_command_compatibility_context_unsupported")
+                    if command.confidence == "exact"
+                        && command.segments.len() == 1
+                        && command.segments[0].executable.as_deref().is_some_and(
+                            |executable| {
+                                let executable_name = basename(executable);
+                                [
+                                    "simgit",
+                                    "sg",
+                                    "simgit.exe",
+                                    "sg.exe",
+                                    "simgit.cmd",
+                                    "sg.cmd",
+                                ]
+                                .iter()
+                                .any(|name| executable_name.eq_ignore_ascii_case(name))
+                            },
+                        ) =>
+                {
+                    crate::command_compatibility::CompatibilityObservations::default()
+                }
+                value => value?,
+            };
         let mut batch = self.observe_declarative(command, active_extensions, deadline)?;
         for mut matched in compatibility.rule_matches {
             // Safe evidence is both capability- and segment-scoped. A preview

@@ -1,0 +1,364 @@
+//! The two destructive simgit flags and shell arguments that can supply them.
+
+use std::collections::BTreeSet;
+use std::sync::LazyLock;
+use std::time::Instant;
+
+use serde::Deserialize;
+
+use crate::command_ascii_comparison::executable_matches;
+use crate::command_option_parsing::{
+    flags_present_in_all_option_parses_with_deadline, known_option_advance,
+    long_flag_assignment_is_enabled, subcommand_parse_tails_with_deadline, MAX_OPTION_PARSE_STATES,
+};
+use crate::command_structured_matchers::check_deadline;
+use crate::{shell_tokens, CommandSegmentV1};
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct SimgitFlagConfig {
+    required_flag: String,
+    #[serde(default)]
+    quiet_flag: Option<String>,
+    #[serde(skip)]
+    quiet_flags: BTreeSet<String>,
+}
+
+impl SimgitFlagConfig {
+    pub(super) fn validate(mut self) -> Result<Self, &'static str> {
+        if !matches!(
+            self.required_flag.as_str(),
+            "--discard-dirty" | "--delete-unmerged"
+        ) || self
+            .quiet_flag
+            .as_deref()
+            .is_some_and(|flag| !matches!(flag, "--help" | "--dry-run"))
+        {
+            return Err("invalid_specialized_matcher_config");
+        }
+        if let Some(flag) = &self.quiet_flag {
+            self.quiet_flags.insert(flag.clone());
+        }
+        Ok(self)
+    }
+
+    pub(super) fn matches(
+        &self,
+        segment: &CommandSegmentV1,
+        deadline: Option<Instant>,
+    ) -> Result<bool, &'static str> {
+        if !executable_matches(segment, &EXECUTABLES) {
+            return Ok(false);
+        }
+        let expansion_kinds = if segment.arguments.iter().any(|arg| has_marker(arg)) {
+            expansion_kinds(segment)
+        } else {
+            Vec::new()
+        };
+        let arguments = &segment.arguments;
+        for grammar in GRAMMARS.iter() {
+            if self.quiet_flag.as_deref() == Some("--dry-run") && grammar.name == "remove" {
+                continue;
+            }
+            let tails = subcommand_parse_tails_with_deadline(
+                arguments,
+                &grammar.subcommands,
+                &grammar.options_with_values,
+                &grammar.known_flags,
+                deadline,
+            );
+            let quiet = self.quiet_flag.is_none()
+                || (arguments.iter().any(|arg| {
+                    self.quiet_flags.iter().any(|flag| {
+                        arg == flag
+                            || arg.strip_prefix(flag.as_str()).is_some_and(|suffix| {
+                                suffix.starts_with('=')
+                                    && !has_marker(suffix)
+                                    && long_flag_assignment_is_enabled(arg)
+                            })
+                    })
+                }) && !arguments.iter().any(|arg| {
+                    self.quiet_flags.iter().any(|flag| {
+                        arg.strip_prefix(flag.as_str())
+                            .is_some_and(|suffix| suffix.starts_with('=') && has_marker(suffix))
+                    })
+                }) && flags_present_in_all_option_parses_with_deadline(
+                    arguments,
+                    &self.quiet_flags,
+                    &grammar.options_with_values,
+                    &grammar.known_flags,
+                    deadline,
+                ));
+            if !quiet {
+                continue;
+            }
+            let Some(tails) = tails else {
+                // Exhausting the bounded subcommand parser cannot prove the flag absent.
+                return Ok(self.quiet_flag.is_none());
+            };
+            for start in tails {
+                check_deadline(deadline)?;
+                if segment.wrapper_chain.iter().any(|name| name == "xargs")
+                    || flag_slot_candidate(
+                        arguments,
+                        start,
+                        grammar,
+                        self.required_flag.as_str(),
+                        &expansion_kinds,
+                        deadline,
+                    )?
+                {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+}
+
+static EXECUTABLES: LazyLock<BTreeSet<String>> = LazyLock::new(|| {
+    set(&[
+        "simgit",
+        "sg",
+        "simgit.exe",
+        "sg.exe",
+        "simgit.cmd",
+        "sg.cmd",
+    ])
+});
+static GRAMMARS: LazyLock<[SimgitGrammar; 2]> = LazyLock::new(|| {
+    [
+        SimgitGrammar::new(
+            "remove",
+            1,
+            &["-m", "--message"],
+            &[
+                "--json",
+                "--commit",
+                "--delete-branch",
+                "--discard-dirty",
+                "--delete-unmerged",
+                "--help",
+            ],
+        ),
+        SimgitGrammar::new(
+            "gc",
+            0,
+            &["--older-than", "--prefix"],
+            &[
+                "--json",
+                "--include-persistent",
+                "--delete-branches",
+                "--discard-dirty",
+                "--delete-unmerged",
+                "--dry-run",
+                "--help",
+            ],
+        ),
+    ]
+});
+
+struct SimgitGrammar {
+    name: &'static str,
+    arity: usize,
+    subcommands: Vec<String>,
+    options_with_values: BTreeSet<String>,
+    known_flags: BTreeSet<String>,
+}
+
+impl SimgitGrammar {
+    fn new(name: &'static str, arity: usize, values: &[&str], flags: &[&str]) -> Self {
+        Self {
+            name,
+            arity,
+            subcommands: vec![name.to_owned()],
+            options_with_values: set(values),
+            known_flags: set(flags),
+        }
+    }
+}
+
+fn set(values: &[&str]) -> BTreeSet<String> {
+    values.iter().map(|value| (*value).to_owned()).collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Expansion {
+    None,
+    OneWord,
+    ManyWords,
+}
+
+// Recover quote context from raw command text rather than shell_tokens' quote-stripped
+// argv. An unaligned token remains unbounded, never a proof that it was quoted.
+fn expansion_kinds(segment: &CommandSegmentV1) -> Vec<Expansion> {
+    let mut result = vec![Expansion::ManyWords; segment.arguments.len()];
+    let Ok(raw_tokens) = shell_tokens(&segment.text, false) else {
+        return result;
+    };
+    let context = raw_expansion_kinds(&segment.text);
+    if raw_tokens.len() != context.len() {
+        return result;
+    }
+    for index in 0..raw_tokens.len() {
+        if raw_tokens[index..].starts_with(&segment.arguments)
+            && index > 0
+            && segment.executable.as_deref() == Some(raw_tokens[index - 1].as_str())
+        {
+            let len = result.len();
+            result.copy_from_slice(&context[index..index + len]);
+            return result;
+        }
+    }
+    result
+}
+
+fn raw_expansion_kinds(text: &str) -> Vec<Expansion> {
+    let mut result = Vec::new();
+    let mut kind = Expansion::None;
+    let mut quote = None;
+    let mut started = false;
+    let mut chars = text.char_indices().peekable();
+    while let Some((index, character)) = chars.next() {
+        if quote.is_none() && matches!(character, ' ' | '\t' | '\r' | '\n') {
+            if started {
+                result.push(kind);
+                kind = Expansion::None;
+                started = false;
+            }
+            continue;
+        }
+        started = true;
+        if character == '\\' && quote != Some('\'') {
+            chars.next();
+            continue;
+        }
+        if character == '\'' && quote != Some('"') {
+            quote = if quote.is_some() { None } else { Some('\'') };
+            continue;
+        }
+        if character == '"' && quote != Some('\'') {
+            quote = if quote.is_some() { None } else { Some('"') };
+            continue;
+        }
+        if quote == Some('\'') || !matches!(character, '$' | '`') {
+            continue;
+        }
+        let many =
+            quote.is_none() || (character == '$' && expands_to_many_words(&text[index + 1..]));
+        kind = if many {
+            Expansion::ManyWords
+        } else if kind == Expansion::None {
+            Expansion::OneWord
+        } else {
+            kind
+        };
+    }
+    if started {
+        result.push(kind);
+    }
+    result
+}
+
+fn expands_to_many_words(after_dollar: &str) -> bool {
+    if after_dollar.starts_with('@') {
+        return true;
+    }
+    let Some(body) = after_dollar.strip_prefix('{') else {
+        return false;
+    };
+    let body = body.split('}').next().unwrap_or(body);
+    body.starts_with('@') || body.contains("[@]")
+}
+
+fn flag_slot_candidate(
+    arguments: &[String],
+    start: usize,
+    grammar: &SimgitGrammar,
+    required: &str,
+    expansion_kinds: &[Expansion],
+    deadline: Option<Instant>,
+) -> Result<bool, &'static str> {
+    let mut pending = vec![(start, 0usize, false, false)]; // index, positionals, -- ended options, deferred flag
+    let mut visited = BTreeSet::new();
+    while let Some(state) = pending.pop() {
+        check_deadline(deadline)?;
+        if !visited.insert(state) {
+            continue;
+        }
+        if visited.len() > MAX_OPTION_PARSE_STATES {
+            return Ok(true); // bounded uncertainty cannot establish absence
+        }
+        let (index, positionals, ended, deferred_flag) = state;
+        let Some(argument) = arguments.get(index) else {
+            continue;
+        };
+        if !ended && argument == "--" {
+            pending.push((index + 1, positionals, true, deferred_flag));
+        } else if !ended && argument.len() > 1 && argument.starts_with('-') {
+            let name = argument
+                .split_once('=')
+                .map_or(argument.as_str(), |(name, _)| name);
+            if name == required && long_flag_assignment_is_enabled(argument) {
+                return Ok(true);
+            }
+            let expansion = expansion_kinds
+                .get(index)
+                .copied()
+                .unwrap_or(Expansion::None);
+            if expansion == Expansion::ManyWords && has_marker(argument) {
+                return Ok(true);
+            }
+            if has_marker(name) && expansion != Expansion::None {
+                return Ok(true);
+            }
+            let advance =
+                known_option_advance(argument, &grammar.options_with_values, &grammar.known_flags);
+            if let Some(advance) = advance {
+                if advance == 2 && expansion_kinds.get(index + 1) == Some(&Expansion::ManyWords) {
+                    return Ok(true); // the option consumes the first word, not the rest
+                }
+                pending.push((index + advance, positionals, ended, deferred_flag));
+            } else {
+                pending.push((index + 1, positionals, ended, deferred_flag));
+                if !argument.contains('=') {
+                    if expansion_kinds.get(index + 1) == Some(&Expansion::ManyWords) {
+                        return Ok(true);
+                    }
+                    pending.push((index + 2, positionals, ended, deferred_flag));
+                }
+            }
+        } else {
+            let expansion = expansion_kinds
+                .get(index)
+                .copied()
+                .unwrap_or(Expansion::None);
+            if !ended
+                && has_marker(argument)
+                && (expansion == Expansion::ManyWords
+                    || (expansion == Expansion::OneWord && positionals >= grammar.arity))
+            {
+                return Ok(true);
+            }
+            let deferred_flag = deferred_flag
+                || (!ended
+                    && has_marker(argument)
+                    && expansion == Expansion::OneWord
+                    && positionals < grammar.arity);
+            let next_positionals = positionals.saturating_add(1).min(grammar.arity + 1);
+            if deferred_flag && next_positionals > grammar.arity {
+                return Ok(true); // a later positional can be the target instead
+            }
+            pending.push((index + 1, next_positionals, ended, deferred_flag));
+        }
+    }
+    Ok(false)
+}
+
+fn has_marker(argument: &str) -> bool {
+    argument.contains('$') || argument.contains('`')
+}
+
+#[cfg(test)]
+#[path = "command_simgit_matcher_tests.rs"]
+mod tests;
