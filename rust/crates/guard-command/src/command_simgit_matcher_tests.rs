@@ -198,3 +198,38 @@ fn config_rejects_unreviewed_flag_names() {
             .map_or(true, |config| config.validate().is_err()));
     }
 }
+
+#[test]
+fn exhausted_parser_keeps_the_rule_and_withholds_quiet_variants() {
+    // An expired deadline stops the bounded parser before it can prove the
+    // flag absent: the rule must still fire, and no preview may narrow it.
+    let expired = Some(Instant::now());
+    for flag in ["--discard-dirty", "--delete-unmerged"] {
+        let command = parse_command(&CommandModelRequestV1 {
+            command: format!("simgit gc --dry-run --help {flag}"),
+            dialect: "posix".to_owned(),
+            transport: "shell_string".to_owned(),
+            extraction_provenance: "guard-shell".to_owned(),
+        })
+        .unwrap();
+        let segment = &command.segments[0];
+        let config = |quiet: Option<&str>| {
+            SimgitFlagConfig {
+                required_flag: flag.to_owned(),
+                quiet_flag: quiet.map(str::to_owned),
+                quiet_flags: quiet.into_iter().map(str::to_owned).collect(),
+            }
+            .validate()
+            .unwrap()
+        };
+        assert_eq!(config(None).matches(segment, expired), Ok(true), "{flag}");
+        for quiet in ["--dry-run", "--help"] {
+            assert_eq!(config(Some(quiet)).matches(segment, None), Ok(true));
+            assert_eq!(
+                config(Some(quiet)).matches(segment, expired),
+                Ok(false),
+                "{flag} {quiet}"
+            );
+        }
+    }
+}
