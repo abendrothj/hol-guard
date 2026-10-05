@@ -78,7 +78,7 @@ def _decode_command_model(
         or payload.get("extraction_provenance") != extraction_provenance
         or not isinstance(wrapper_chain, list)
         or len(wrapper_chain) > _MAX_SEGMENTS * 4
-        or any(wrapper not in {"sudo", "exec", "xargs", "env", "command", "sh", "bash"} for wrapper in wrapper_chain)
+        or any(wrapper != "sudo" for wrapper in wrapper_chain)
         or not isinstance(segments, list)
         or len(segments) > _MAX_SEGMENTS
         or confidence not in {"exact", "uncertain"}
@@ -133,9 +133,7 @@ def _decode_command_model(
             or not all(isinstance(value, str) for value in environment_names)
             or not isinstance(segment_wrappers, list)
             or len(segment_wrappers) > 4
-            or any(
-                wrapper not in {"sudo", "exec", "xargs", "env", "command", "sh", "bash"} for wrapper in segment_wrappers
-            )
+            or any(wrapper != "sudo" for wrapper in segment_wrappers)
             or (executable is not None and not isinstance(executable, str))
             or not isinstance(segment_path_overridden, bool)
             or not isinstance(execution_context, str)
@@ -167,13 +165,7 @@ def _decode_command_model(
             or start < 0
             or end <= start
             or end > len(normalized_text)
-            or (
-                normalized_text[start:end] != text
-                and not (
-                    any(wrapper in {"sh", "bash"} for wrapper in segment_wrappers)
-                    and text in normalized_text[start:end]
-                )
-            )
+            or normalized_text[start:end] != text
         ):
             return None
         if index == 0:
@@ -200,52 +192,21 @@ def _decode_command_model(
             decoded_prefix = decode_sudo_prefix(tokens, executable_index)
             if decoded_prefix is None:
                 return None
-            executable_index, sudo_wrappers = decoded_prefix
-            if segment_wrappers[: len(sudo_wrappers)] != sudo_wrappers:
+            executable_index, expected_wrappers = decoded_prefix
+            if segment_wrappers != expected_wrappers:
                 return None
-            native_wrappers = segment_wrappers[len(sudo_wrappers) :]
-            if native_wrappers:
-                # Rust owns wrapper grammar. Bind its effective argv to the
-                # source tokens without building a second shell parser here.
-                leading = tokens[executable_index].replace("\\", "/").rsplit("/", 1)[-1]
-                if leading != native_wrappers[0] or executable is None:
-                    return None
-                if executable not in tokens and executable not in text:
-                    return None
-                if "env" in native_wrappers:
-                    prefix = tokens[: tokens.index(executable)] if executable in tokens else tokens
-                    expected_environment_names.extend(
-                        name for token in prefix if (name := _assignment_name(token)) is not None
-                    )
-                    if executable not in tokens:
-                        expected_environment_names = environment_names
-                expected_path_override = "PATH" in expected_environment_names
-                if environment_names != expected_environment_names or segment_path_overridden != expected_path_override:
-                    return None
-            else:
-                expected_executable = tokens[executable_index] if executable_index < len(tokens) else None
-                expected_arguments = tokens[executable_index + 1 :] if expected_executable is not None else []
-                expected_path_override = "PATH" in expected_environment_names
-                if (
-                    environment_names != expected_environment_names
-                    or executable != expected_executable
-                    or arguments != expected_arguments
-                    or segment_path_overridden != expected_path_override
-                ):
-                    return None
         elif segment_wrappers:
             return None
-        else:
-            expected_executable = tokens[executable_index] if executable_index < len(tokens) else None
-            expected_arguments = tokens[executable_index + 1 :] if expected_executable is not None else []
-            expected_path_override = "PATH" in expected_environment_names
-            if (
-                environment_names != expected_environment_names
-                or executable != expected_executable
-                or arguments != expected_arguments
-                or segment_path_overridden != expected_path_override
-            ):
-                return None
+        expected_executable = tokens[executable_index] if executable_index < len(tokens) else None
+        expected_arguments = tokens[executable_index + 1 :] if expected_executable is not None else []
+        expected_path_override = "PATH" in expected_environment_names
+        if (
+            environment_names != expected_environment_names
+            or executable != expected_executable
+            or arguments != expected_arguments
+            or segment_path_overridden != expected_path_override
+        ):
+            return None
 
         total_tokens += len(tokens)
         if total_tokens > _MAX_TOKENS:

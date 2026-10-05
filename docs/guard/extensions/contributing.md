@@ -132,9 +132,6 @@ Every new rule needs data-driven cases that prove:
 - destructive examples reach both side-effect-free inspection and runtime review, with the expected native rule evidence and final review or enforcement floor;
 - safe previews, read-only variants, and help narrow only the intended rule;
 - reordered flags, quoting, paths with spaces, wrappers, separators, pipelines, and suffixes preserve meaning;
-- quoted expansions before a required positional are tested with and without a later operand:
-  the expansion can become an option while the later operand fills the positional slot, even
-  when separated by `--`;
 - malformed or unsupported input retains uncertainty and cannot imply safety;
 - inactive external extensions contribute no enforcement, while enabled extensions and disabled permissions behave as declared;
 - overlapping rules, first-party floors, and managed controls retain the strongest requirement;

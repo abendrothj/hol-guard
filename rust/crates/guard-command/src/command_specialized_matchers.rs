@@ -19,10 +19,6 @@ use crate::command_ascii_comparison::{self as ascii_comparison, lowercase_for_as
 mod curl;
 #[path = "command_reviewed_literal.rs"]
 mod literal;
-#[path = "command_simgit_matcher.rs"]
-mod simgit;
-
-use simgit::SimgitFlagConfig;
 
 use literal::ReviewedLiteralConfig;
 
@@ -107,7 +103,6 @@ pub(crate) enum SpecializedMatcher {
     Repo2nbExpansion(Repo2nbExpansionConfig),
     TuiRunnerExpansion(TuiRunnerExpansionConfig),
     ReviewedLiteral(ReviewedLiteralConfig),
-    SimgitFlag(SimgitFlagConfig),
 }
 
 impl SpecializedMatcher {
@@ -198,10 +193,6 @@ impl SpecializedMatcher {
                     .collect();
                 Ok(Self::TuiRunnerExpansion(config))
             }
-            "simgit-flag.v1" => {
-                let config: SimgitFlagConfig = serde_json::from_value(config).map_err(invalid)?;
-                Ok(Self::SimgitFlag(config.validate()?))
-            }
             "reviewed-literal.v1" => {
                 let config: ReviewedLiteralConfig =
                     serde_json::from_value(config).map_err(invalid)?;
@@ -261,7 +252,6 @@ impl SpecializedMatcher {
                 }
                 Self::Repo2nbExpansion(config) => config.matches(segment, deadline)?,
                 Self::TuiRunnerExpansion(config) => config.matches(segment, deadline)?,
-                Self::SimgitFlag(config) => config.matches(segment, deadline)?,
                 Self::ReviewedLiteral(_) => unreachable!("handled before segment iteration"),
             };
             check_deadline(deadline)?;
