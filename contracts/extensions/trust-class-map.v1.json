@@ -86,6 +86,7 @@
       "command.ctty",
       "command.digline",
       "command.errand",
+      "command.faf-cli",
       "command.genclave",
       "command.gitsync",
       "command.mcp-contribos",
