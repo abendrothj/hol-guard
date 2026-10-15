@@ -5,6 +5,10 @@
 from __future__ import annotations
 
 # ruff: noqa: F403,F405
+from .native_approval_queue_identity import UNAVAILABLE as APPROVAL_QUEUE_IDENTITY_UNAVAILABLE
+from .native_approval_queue_identity import ApprovalQueueIdentityUnavailableError
+from .native_guard_store import NativeGuardStoreUnavailable
+from .native_signal_projection import NativeSignalProjectionUnavailableError
 from .store_base import *
 
 
@@ -41,21 +45,33 @@ class StoreApprovalsMixin:
             )
         )
 
-    def add_approval_request(self, request: GuardApprovalRequest, now: str) -> str:
-        with self._connect() as connection:
-            request_id = persist_approval_request(
-                connection,
-                request,
-                now,
-                oauth_source=self._guard_source,
-                guard_home=self.guard_home,
+    def add_approval_request(
+        self,
+        request: GuardApprovalRequest,
+        now: str,
+        *,
+        prompt_shown: bool | None = None,
+    ) -> str:
+        # The resident backfills legacy queue rows, derives the canonical
+        # surfaces and queue identity, deduplicates and binds the outbox event
+        # in one transaction. With ``prompt_shown`` set, a newly queued request
+        # also gets its ``approval.created`` (and, when prompted,
+        # ``ask_once_shown``) event there. Its silence keeps the projection
+        # owner's error.
+        try:
+            request_id = self._native_store_call(
+                "add_approval_request",
+                {"request": request.to_dict(), "now": now, "prompt_shown": prompt_shown},
             )
-            bind_review_events_for_request(
-                connection,
-                request_id=request_id,
-                oauth_source=self._guard_source,
-            )
-            return request_id
+        except NativeGuardStoreUnavailable as error:
+            raise NativeSignalProjectionUnavailableError(error.reason) from error
+        except ValueError as error:
+            if str(error) == APPROVAL_QUEUE_IDENTITY_UNAVAILABLE:
+                raise ApprovalQueueIdentityUnavailableError(reason="rejected") from error
+            raise
+        if not isinstance(request_id, str) or not request_id:
+            raise NativeSignalProjectionUnavailableError("native_guard_store_approval_request_invalid")
+        return request_id
 
     def resolve_harness_native_approval_request(
         self,
