@@ -10251,15 +10251,18 @@
       "classes": {
         "external": [
           "command.agentbridge",
+          "command.agenticjobs",
           "command.agi-memory",
           "command.ai-dev",
           "command.answerloops",
           "command.appimg",
           "command.blitcp",
           "command.blkcp",
+          "command.claude-tmux",
           "command.cloudg",
           "command.codesage",
           "command.cogext",
+          "command.crisp-tui",
           "command.cs",
           "command.ctty",
           "command.dataman",
