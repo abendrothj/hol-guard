@@ -101,9 +101,20 @@
               "description": "Identifies --discard-dirty on simgit remove and gc and unresolved shell expansions that can supply it.",
               "matcher": {
                 "config": {
-                  "required_flag": "--discard-dirty"
+                  "executables": [
+                    "simgit",
+                    "sg"
+                  ],
+                  "forbidden_flags": [
+                    "--dry-run",
+                    "--help"
+                  ],
+                  "required_flags": [
+                    "--discard-dirty"
+                  ],
+                  "subcommands": []
                 },
-                "op": "simgit-flag.v1"
+                "op": "executable.v1"
               },
               "permission_id": "command.simgit.permission.discard-dirty",
               "risk_classes": [
@@ -115,10 +126,17 @@
                 {
                   "matcher": {
                     "config": {
-                      "quiet_flag": "--dry-run",
-                      "required_flag": "--discard-dirty"
+                      "executables": [
+                        "simgit",
+                        "sg"
+                      ],
+                      "required_flags": [
+                        "--discard-dirty",
+                        "--dry-run"
+                      ],
+                      "subcommands": []
                     },
-                    "op": "simgit-flag.v1"
+                    "op": "executable.v1"
                   },
                   "title": "simgit gc discard preview",
                   "variant_id": "dry-run"
@@ -126,10 +144,17 @@
                 {
                   "matcher": {
                     "config": {
-                      "quiet_flag": "--help",
-                      "required_flag": "--discard-dirty"
+                      "executables": [
+                        "simgit",
+                        "sg"
+                      ],
+                      "required_flags": [
+                        "--discard-dirty",
+                        "--help"
+                      ],
+                      "subcommands": []
                     },
-                    "op": "simgit-flag.v1"
+                    "op": "executable.v1"
                   },
                   "title": "simgit command help",
                   "variant_id": "help"
@@ -151,9 +176,20 @@
               "description": "Identifies --delete-unmerged on simgit remove and gc and unresolved shell expansions that can supply it.",
               "matcher": {
                 "config": {
-                  "required_flag": "--delete-unmerged"
+                  "executables": [
+                    "simgit",
+                    "sg"
+                  ],
+                  "forbidden_flags": [
+                    "--dry-run",
+                    "--help"
+                  ],
+                  "required_flags": [
+                    "--delete-unmerged"
+                  ],
+                  "subcommands": []
                 },
-                "op": "simgit-flag.v1"
+                "op": "executable.v1"
               },
               "permission_id": "command.simgit.permission.delete-unmerged",
               "risk_classes": [
@@ -165,10 +201,17 @@
                 {
                   "matcher": {
                     "config": {
-                      "quiet_flag": "--dry-run",
-                      "required_flag": "--delete-unmerged"
+                      "executables": [
+                        "simgit",
+                        "sg"
+                      ],
+                      "required_flags": [
+                        "--delete-unmerged",
+                        "--dry-run"
+                      ],
+                      "subcommands": []
                     },
-                    "op": "simgit-flag.v1"
+                    "op": "executable.v1"
                   },
                   "title": "simgit gc branch deletion preview",
                   "variant_id": "dry-run"
@@ -176,10 +219,17 @@
                 {
                   "matcher": {
                     "config": {
-                      "quiet_flag": "--help",
-                      "required_flag": "--delete-unmerged"
+                      "executables": [
+                        "simgit",
+                        "sg"
+                      ],
+                      "required_flags": [
+                        "--delete-unmerged",
+                        "--help"
+                      ],
+                      "subcommands": []
                     },
-                    "op": "simgit-flag.v1"
+                    "op": "executable.v1"
                   },
                   "title": "simgit command help",
                   "variant_id": "help"
@@ -248,7 +298,9 @@
           "command.mcp-authyouragent",
           "command.mcp-ccm",
           "command.mcp-cf-mail-mcp",
+          "command.mcp-ci-guard",
           "command.mcp-clipugc",
+          "command.mcp-compose-bridge",
           "command.mcp-contribos",
           "command.mcp-enola",
           "command.mcp-evernode-mcp",
@@ -581,10 +633,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "exec-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -594,10 +644,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "exec-sg",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -607,10 +655,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -620,10 +666,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -659,10 +703,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "env-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -672,7 +714,7 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
+      "expected_action": "review",
       "expected_effective_segments": [
         0
       ],
@@ -685,10 +727,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "bash-c",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -698,10 +738,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "sh-c",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -711,10 +749,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "exec-exe",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -724,10 +760,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-cmd",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -737,10 +771,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "exec-value",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -750,10 +782,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-value",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -763,10 +793,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-replace",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -776,10 +804,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-json-value",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -789,10 +815,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-json-value-other",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -803,9 +827,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "gc-expansion-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -816,9 +838,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "gc-expansion-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -829,9 +849,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-gc-expansion",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -842,9 +860,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "remove-extra-expansion",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -855,9 +871,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "remove-name-expansion",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -868,9 +882,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "split-target-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -881,9 +893,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "split-target-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -894,9 +904,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "split-value-gc",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -907,9 +915,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-at-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -920,9 +926,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-at-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -933,9 +937,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-array",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -945,10 +947,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "substitution",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -958,10 +958,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "backticks",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -971,10 +969,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "substitution-quoted-flag",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -984,10 +980,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-injected-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -997,10 +991,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "xargs-injected-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -1176,7 +1168,9 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [],
+      "expected_effective_segments": [
+        0
+      ],
       "id": "message-flag-value",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -1187,7 +1181,9 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [],
+      "expected_effective_segments": [
+        0
+      ],
       "id": "prefix-flag-value",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -1219,10 +1215,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "quoted-flag-before-target-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -1232,10 +1226,8 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_action": "block",
+      "expected_effective_segments": [],
       "id": "quoted-flag-before-target-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -1246,9 +1238,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-variable-before-target-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -1259,9 +1249,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "quoted-variable-before-target-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -1337,7 +1325,7 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "review",
+      "expected_action": "block",
       "expected_effective_segments": [],
       "id": "quoted-substitution",
       "rule_id": "command.simgit.discard-dirty"
@@ -1425,7 +1413,7 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
+      "expected_action": "block",
       "expected_effective_segments": [],
       "id": "exec-safe",
       "rule_id": "command.simgit.discard-dirty"
@@ -1436,7 +1424,7 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
+      "expected_action": "block",
       "expected_effective_segments": [],
       "id": "xargs-preview",
       "rule_id": "command.simgit.discard-dirty"
@@ -1447,7 +1435,7 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "require-reapproval",
+      "expected_action": "block",
       "expected_effective_segments": [],
       "id": "xargs-preview-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
@@ -1481,9 +1469,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "option-value-preview-not-quiet-dirty",
       "rule_id": "command.simgit.discard-dirty"
     },
@@ -1494,9 +1480,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "option-value-preview-not-quiet-unmerged",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -1507,9 +1491,7 @@
         "command.simgit"
       ],
       "expected_action": "review",
-      "expected_effective_segments": [
-        0
-      ],
+      "expected_effective_segments": [],
       "id": "option-value-help-not-quiet",
       "rule_id": "command.simgit.delete-unmerged"
     },

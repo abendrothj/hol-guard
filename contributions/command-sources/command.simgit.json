@@ -9,19 +9,28 @@
       "simgit uncommitted worktree discard command",
       "simgit unmerged branch deletion command"
     ],
-    "risk_classes": ["destructive_shell"],
+    "risk_classes": [
+      "destructive_shell"
+    ],
     "safer_alternatives": [
       "Run the command without --discard-dirty or --delete-unmerged and read what it refuses to touch.",
       "Commit the worktree's changes with `simgit remove --commit` instead of discarding them."
     ],
-    "reference_urls": ["https://github.com/abendrothj/simgit"],
+    "reference_urls": [
+      "https://github.com/abendrothj/simgit"
+    ],
     "required": false,
     "source": "built-in",
     "aliases": [],
     "dependencies": [],
     "conflicts": [],
-    "ecosystem_ids": ["simgit"],
-    "executables": ["simgit", "sg"],
+    "ecosystem_ids": [
+      "simgit"
+    ],
+    "executables": [
+      "simgit",
+      "sg"
+    ],
     "project_markers": [],
     "publisher": {
       "id": "community.abendrothj",
@@ -29,7 +38,11 @@
       "url": "https://github.com/abendrothj"
     },
     "homepage": "https://github.com/abendrothj/simgit",
-    "icon": {"kind": "react-icon", "name": "HiMiniCube", "background": "#0F766E"},
+    "icon": {
+      "kind": "react-icon",
+      "name": "HiMiniCube",
+      "background": "#0F766E"
+    },
     "license": "Apache-2.0",
     "permissions": [
       {
@@ -42,7 +55,9 @@
         "default_enabled": true,
         "configurable": true,
         "typed_capabilities": [],
-        "action_classes": ["simgit uncommitted worktree discard command"],
+        "action_classes": [
+          "simgit uncommitted worktree discard command"
+        ],
         "dependencies": [],
         "conflicts": [],
         "implied_permissions": [],
@@ -64,7 +79,9 @@
         "default_enabled": true,
         "configurable": true,
         "typed_capabilities": [],
-        "action_classes": ["simgit unmerged branch deletion command"],
+        "action_classes": [
+          "simgit unmerged branch deletion command"
+        ],
         "dependencies": [],
         "conflicts": [],
         "implied_permissions": [],
@@ -85,25 +102,71 @@
         "title": "simgit uncommitted worktree discard",
         "description": "Identifies --discard-dirty on simgit remove and gc and unresolved shell expansions that can supply it.",
         "severity": "critical",
-        "risk_classes": ["destructive_shell"],
-        "action_classes": ["simgit uncommitted worktree discard command"],
+        "risk_classes": [
+          "destructive_shell"
+        ],
+        "action_classes": [
+          "simgit uncommitted worktree discard command"
+        ],
         "safer_alternatives": [
           "Omit --discard-dirty to preserve a dirty worktree.",
           "Use `simgit remove --commit -m <message>` to keep the changes.",
           "Preview a GC selection with `simgit gc --dry-run`."
         ],
         "default_mode": "review",
-        "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--discard-dirty"}},
+        "matcher": {
+          "op": "executable.v1",
+          "config": {
+            "executables": [
+              "simgit",
+              "sg"
+            ],
+            "subcommands": [],
+            "required_flags": [
+              "--discard-dirty"
+            ],
+            "forbidden_flags": [
+              "--dry-run",
+              "--help"
+            ]
+          }
+        },
         "safe_variants": [
           {
             "variant_id": "dry-run",
             "title": "simgit gc discard preview",
-            "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--discard-dirty", "quiet_flag": "--dry-run"}}
+            "matcher": {
+              "op": "executable.v1",
+              "config": {
+                "executables": [
+                  "simgit",
+                  "sg"
+                ],
+                "subcommands": [],
+                "required_flags": [
+                  "--discard-dirty",
+                  "--dry-run"
+                ]
+              }
+            }
           },
           {
             "variant_id": "help",
             "title": "simgit command help",
-            "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--discard-dirty", "quiet_flag": "--help"}}
+            "matcher": {
+              "op": "executable.v1",
+              "config": {
+                "executables": [
+                  "simgit",
+                  "sg"
+                ],
+                "subcommands": [],
+                "required_flags": [
+                  "--discard-dirty",
+                  "--help"
+                ]
+              }
+            }
           }
         ]
       },
@@ -114,25 +177,71 @@
         "title": "simgit unmerged branch deletion",
         "description": "Identifies --delete-unmerged on simgit remove and gc and unresolved shell expansions that can supply it.",
         "severity": "high",
-        "risk_classes": ["destructive_shell"],
-        "action_classes": ["simgit unmerged branch deletion command"],
+        "risk_classes": [
+          "destructive_shell"
+        ],
+        "action_classes": [
+          "simgit unmerged branch deletion command"
+        ],
         "safer_alternatives": [
           "Omit --delete-unmerged to retain unmerged commits.",
           "Merge or push the branch before deleting its worktree.",
           "Preview a GC selection with `simgit gc --dry-run`."
         ],
         "default_mode": "review",
-        "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--delete-unmerged"}},
+        "matcher": {
+          "op": "executable.v1",
+          "config": {
+            "executables": [
+              "simgit",
+              "sg"
+            ],
+            "subcommands": [],
+            "required_flags": [
+              "--delete-unmerged"
+            ],
+            "forbidden_flags": [
+              "--dry-run",
+              "--help"
+            ]
+          }
+        },
         "safe_variants": [
           {
             "variant_id": "dry-run",
             "title": "simgit gc branch deletion preview",
-            "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--delete-unmerged", "quiet_flag": "--dry-run"}}
+            "matcher": {
+              "op": "executable.v1",
+              "config": {
+                "executables": [
+                  "simgit",
+                  "sg"
+                ],
+                "subcommands": [],
+                "required_flags": [
+                  "--delete-unmerged",
+                  "--dry-run"
+                ]
+              }
+            }
           },
           {
             "variant_id": "help",
             "title": "simgit command help",
-            "matcher": {"op": "simgit-flag.v1", "config": {"required_flag": "--delete-unmerged", "quiet_flag": "--help"}}
+            "matcher": {
+              "op": "executable.v1",
+              "config": {
+                "executables": [
+                  "simgit",
+                  "sg"
+                ],
+                "subcommands": [],
+                "required_flags": [
+                  "--delete-unmerged",
+                  "--help"
+                ]
+              }
+            }
           }
         ]
       }
