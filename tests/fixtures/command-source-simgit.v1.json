@@ -257,6 +257,7 @@
     "trust": {
       "classes": {
         "external": [
+          "command.aether-vault",
           "command.agentbridge",
           "command.agenticjobs",
           "command.agi-memory",
@@ -297,6 +298,7 @@
           "command.mcp-architecture-intelligence-platform",
           "command.mcp-asdecided",
           "command.mcp-aseprite",
+          "command.mcp-askjev",
           "command.mcp-authyouragent",
           "command.mcp-ccm",
           "command.mcp-cf-mail-mcp",
@@ -321,7 +323,9 @@
           "command.mcp-krusch-agentic-proxy",
           "command.mcp-krusch-context-mcp",
           "command.mcp-krusch-git",
+          "command.mcp-kuuhaku",
           "command.mcp-lattice-talk",
+          "command.mcp-leadline",
           "command.mcp-loomdesk",
           "command.mcp-mail-server",
           "command.mcp-melra",
@@ -738,8 +742,10 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "block",
-      "expected_effective_segments": [],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
       "id": "bash-c",
       "rule_id": "command.simgit.delete-unmerged"
     },
@@ -749,8 +755,10 @@
       "enabled_extensions": [
         "command.simgit"
       ],
-      "expected_action": "block",
-      "expected_effective_segments": [],
+      "expected_action": "review",
+      "expected_effective_segments": [
+        0
+      ],
       "id": "sh-c",
       "rule_id": "command.simgit.discard-dirty"
     },
